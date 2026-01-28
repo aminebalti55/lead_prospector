@@ -29,7 +29,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   lead: Lead | null;
-  filename?: string;
+  filename?: string;  // Excel filename to update after sending
 };
 
 export default function EmailComposer({ open, onClose, lead, filename }: Props) {
@@ -44,16 +44,37 @@ export default function EmailComposer({ open, onClose, lead, filename }: Props) 
     enabled: open,
   });
 
+  // Format pain tags into readable review
+  const getFormattedReview = () => {
+    const painTags = (lead?.Pain_Tags as string) || "";
+    return painTags
+      .split(",")
+      .map((tag: string) => {
+        const t = tag.trim();
+        if (t === "no_website") return "• No website or website not found";
+        if (t === "few_reviews") return "• Limited online reviews";
+        if (t === "slow_site") return "• Website loads slowly";
+        if (t === "no_ssl") return "• Missing security certificate (HTTPS)";
+        if (t === "not_mobile_friendly") return "• Not optimized for mobile devices";
+        if (t === "no_booking") return "• No online booking option";
+        if (t === "no_contact_form") return "• No contact form found";
+        return t ? `• ${t}` : "";
+      })
+      .filter(Boolean)
+      .join("\n") || "• Opportunities to improve online visibility";
+  };
+
   const previewMutation = useMutation({
     mutationFn: (templateId: string) =>
       previewEmail({
         template_id: templateId,
         variables: {
           business_name: (lead?.Business_Name as string) || "",
-          contact_name: (lead?.Contact_Name as string) || "there",
+          contact_name: (lead?.Business_Name as string) || "there",
           city: (lead?.City as string) || "",
-          niche: (lead?.Niche as string) || "",
-          website: (lead?.Website as string) || "",
+          niche: (lead?.Niche as string)?.toLowerCase() || "business",
+          website: (lead?.Website as string) || "your website",
+          website_review: getFormattedReview(),
         },
       }),
     onSuccess: (data) => {
@@ -70,6 +91,7 @@ export default function EmailComposer({ open, onClose, lead, filename }: Props) 
         subject,
         body,
         lead_id: (lead?.Lead_ID as string) || undefined,
+        filename: filename,  // Pass filename to update Excel
       }),
     onSuccess: () => {
       setSendSuccess(true);

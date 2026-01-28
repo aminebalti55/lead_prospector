@@ -251,8 +251,31 @@ class LeadProspector:
                 f"\n[bold green]Found {len(unique_leads)} total leads[/bold green]"
             )
 
+            # Generate meaningful filename from niche and location
+            # e.g., "dental_Chicago_IL" or "plumber_Austin_Houston_TX"
+            niche_part = "_".join(niches[:2])  # Max 2 niches in filename
+            
+            # Parse locations to get city names
+            city_names = []
+            state_abbr = ""
+            for loc in locations[:2]:  # Max 2 locations in filename
+                parts = loc.split(",")
+                if parts:
+                    city_names.append(parts[0].strip().replace(" ", ""))
+                    if len(parts) > 1:
+                        state_abbr = parts[1].strip()
+            
+            location_part = "_".join(city_names)
+            if state_abbr:
+                location_part = f"{location_part}_{state_abbr}"
+            
+            # Final filename: niche_city_state (e.g., "dental_Chicago_IL")
+            filename = f"{niche_part}_{location_part}".lower()
+            # Clean up any invalid characters
+            filename = "".join(c if c.isalnum() or c == "_" else "_" for c in filename)
+            
             output_files = self.exporter.export(
-                unique_leads, filename="lead_prospects", format=output_format
+                unique_leads, filename=filename, format=output_format
             )
             self.last_output_files = output_files
 
@@ -317,10 +340,18 @@ class LeadProspector:
                           that don't include them in search results (BBB, Yelp)
             max_results: Maximum results per scraper (default: 20)
         """
+        print(f"\n[FETCH_SCRAPERS] ========== STARTING SCRAPER FETCH ==========", flush=True)
+        print(f"[FETCH_SCRAPERS] Niche: {niche}", flush=True)
+        print(f"[FETCH_SCRAPERS] Location: {location}", flush=True)
+        print(f"[FETCH_SCRAPERS] Max results: {max_results}", flush=True)
+        print(f"[FETCH_SCRAPERS] Skip scrapers: {skip_scrapers}", flush=True)
+        
         # Parse location into city and state
         parts = location.split(",")
         city = parts[0].strip()
         state = parts[1].strip() if len(parts) > 1 else ""
+        
+        print(f"[FETCH_SCRAPERS] Parsed city: {city}, state: {state}", flush=True)
 
         rate_limiter = RateLimiter()
         all_leads: list[BusinessLead] = []
@@ -358,6 +389,9 @@ class LeadProspector:
         completed_scrapers = 0
 
         for name, step_name, scraper in scrapers:
+            print(f"\n[PIPELINE] ===== Starting scraper: {name} =====", flush=True)
+            logger.info(f"Starting scraper: {name}")
+            
             # Update progress tracker - starting scraper
             if tracker:
                 try:
@@ -373,6 +407,7 @@ class LeadProspector:
                     logger.debug(f"Progress tracker update failed: {e}")
 
             try:
+                print(f"[PIPELINE] Opening scraper context for {name}...", flush=True)
                 async with scraper:
                     leads = await scraper.search(
                         business_type=niche, city=city, state=state, max_results=max_results
@@ -414,6 +449,11 @@ class LeadProspector:
 
                     all_leads.extend(leads)
             except Exception as e:
+                import traceback
+                print(f"\n[ERROR] ========== SCRAPER {name} FAILED ==========", flush=True)
+                print(f"[ERROR] Exception: {e}", flush=True)
+                print(f"[ERROR] Traceback:\n{traceback.format_exc()}", flush=True)
+                print(f"[ERROR] ================================================\n", flush=True)
                 logger.warning(f"Error scraping {name}: {e}")
                 console.print(f"    [dim red]{name}:[/dim red] Failed - {e}")
 

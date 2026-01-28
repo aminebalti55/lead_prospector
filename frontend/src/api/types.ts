@@ -123,6 +123,7 @@ export type EmailSendRequest = {
   subject: string;
   body: string;
   lead_id?: string;
+  filename?: string;  // Excel file to update
 };
 
 export type EmailSendResponse = {
@@ -134,6 +135,38 @@ export type EmailSendResponse = {
 export type EmailPreviewRequest = {
   template_id: string;
   variables: Record<string, string>;
+};
+
+// Batch Email
+export type BatchEmailRecipient = {
+  to_email: string;
+  to_name: string;
+  lead_id?: string;
+  variables: Record<string, string>;
+};
+
+export type BatchEmailRequest = {
+  template_id: string;
+  recipients: BatchEmailRecipient[];
+  custom_subject?: string;
+  custom_body?: string;
+  delay_seconds?: number;
+  filename?: string;  // Excel file to update after sending
+};
+
+export type BatchEmailResult = {
+  to_email: string;
+  to_name: string;
+  success: boolean;
+  message: string;
+  sent_at?: string | null;
+};
+
+export type BatchEmailResponse = {
+  total: number;
+  sent: number;
+  failed: number;
+  results: BatchEmailResult[];
 };
 
 // Lead with computed quality score

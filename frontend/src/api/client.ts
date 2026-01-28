@@ -5,6 +5,8 @@ import type {
   EmailSendRequest,
   EmailSendResponse,
   EmailTemplatesResponse,
+  BatchEmailRequest,
+  BatchEmailResponse,
   LeadsResponse,
   LeadUpdateRequest,
   OutputFilesResponse,
@@ -76,5 +78,10 @@ export async function sendEmail(body: EmailSendRequest): Promise<EmailSendRespon
 
 export async function previewEmail(body: EmailPreviewRequest): Promise<{ subject: string; body: string }> {
   const { data } = await api.post<{ subject: string; body: string }>("/email/preview", body);
+  return data;
+}
+
+export async function sendBatchEmails(body: BatchEmailRequest): Promise<BatchEmailResponse> {
+  const { data } = await api.post<BatchEmailResponse>("/email/batch", body);
   return data;
 }

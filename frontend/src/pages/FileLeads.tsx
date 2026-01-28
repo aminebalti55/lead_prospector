@@ -31,6 +31,7 @@ import { downloadUrl, getLeads, updateLead } from "../api/client";
 import type { Lead, LeadUpdateRequest } from "../api/types";
 import LeadsTable from "../components/LeadsTable";
 import EmailComposer from "../components/EmailComposer";
+import BatchEmailDialog from "../components/BatchEmailDialog";
 import { calculateQualityScore, getQualityTier } from "../components/QualityBadge";
 import { chartColors, gradients, glassEffect } from "../theme";
 
@@ -94,6 +95,7 @@ export default function FileLeads() {
   const filename = useMemo(() => decodeURIComponent(params.filename ?? ""), [params]);
   const [toast, setToast] = useState<string | null>(null);
   const [emailLead, setEmailLead] = useState<Lead | null>(null);
+  const [batchEmailOpen, setBatchEmailOpen] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
 
   const leadsQuery = useQuery({
@@ -194,14 +196,24 @@ export default function FileLeads() {
               </Typography>
             </Box>
           </Stack>
-          <Button
-            component="a"
-            href={downloadUrl(filename)}
-            variant="outlined"
-            startIcon={<DownloadIcon />}
-          >
-            Download Excel
-          </Button>
+          <Stack direction="row" spacing={2}>
+            <Button
+              variant="contained"
+              startIcon={<EmailIcon />}
+              onClick={() => setBatchEmailOpen(true)}
+              disabled={!stats || stats.withEmail === 0}
+            >
+              Email All ({stats?.withEmail || 0})
+            </Button>
+            <Button
+              component="a"
+              href={downloadUrl(filename)}
+              variant="outlined"
+              startIcon={<DownloadIcon />}
+            >
+              Download Excel
+            </Button>
+          </Stack>
         </Stack>
       </Box>
 
@@ -337,11 +349,19 @@ export default function FileLeads() {
         </CardContent>
       </Card>
 
-      {/* Email Composer Modal */}
+      {/* Email Composer Modal (single lead) */}
       <EmailComposer
         open={!!emailLead}
         onClose={() => setEmailLead(null)}
         lead={emailLead}
+        filename={filename}
+      />
+
+      {/* Batch Email Dialog (multiple leads) */}
+      <BatchEmailDialog
+        open={batchEmailOpen}
+        onClose={() => setBatchEmailOpen(false)}
+        leads={filteredLeads}
         filename={filename}
       />
 

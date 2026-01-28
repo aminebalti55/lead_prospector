@@ -3,11 +3,18 @@ from __future__ import annotations
 # === CRITICAL FIX FOR PYTHON 3.13 ON WINDOWS ===
 # Must be before ANY other imports that might touch asyncio
 import sys
+import os
 import asyncio
+
+# Force unbuffered output
+os.environ["PYTHONUNBUFFERED"] = "1"
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 # ===============================================
+
+print("[APP] Backend module loading...", flush=True)
 
 import os
 import smtplib
@@ -43,8 +50,12 @@ from backend.models import (
     EmailSendResponse,
     EmailTemplate,
     EmailTemplatesResponse,
+    BatchEmailRequest,
+    BatchEmailResponse,
+    BatchEmailResult,
 )
 from backend.run_manager import RunManager
+import asyncio
 
 
 app = FastAPI(title="Lead Prospector API", version="0.2.0")
@@ -69,52 +80,95 @@ EMAIL_TEMPLATES = [
     EmailTemplate(
         id="initial",
         name="Initial Outreach",
-        subject="{business_name} - Quick question about your website",
-        body="""Hi {business_name} team,
+        subject="Quick idea for {business_name}",
+        body="""Hi there,
 
-I came across {website} while researching {niche}s in {city} and noticed a few opportunities to get more calls from Google.
+I was doing some research on local businesses in {city} and came across {business_name}.
 
-Specifically:
-- Your site could rank higher for "{niche} near me" and "emergency {niche} {city}"
-- A few quick fixes could improve load speed and mobile experience
-- Your reviews deserve more visibility online
+Here's what I noticed: most customers today search online before making a decision. They look for reviews, compare options, and often choose whoever shows up first and looks the most professional.
 
-I help local {niche}s get more leads through website improvements and SEO.
+The challenge? Many great businesses like yours get overlooked — not because of the quality of your work, but because your online presence isn't working as hard as it could.
 
-Would a quick 10-minute call this week make sense?
+I'm Amine, a software engineer who helps local businesses:
+• Rank higher on Google for searches like "{niche} near me"
+• Turn website visitors into actual phone calls
+• Build a modern online presence that builds trust instantly
+
+I'd love to share a few ideas specific to your business — no cost, no commitment.
+
+Worth a quick 10-minute chat this week?
 
 Best,
-{sender_name}""",
+Amine
+
+P.S. You can see some of my work here: https://aminebdev.vercel.app/""",
+    ),
+    EmailTemplate(
+        id="initial_with_review",
+        name="Initial Outreach (with Insights)",
+        subject="I took a look at {business_name}'s online presence",
+        body="""Hi there,
+
+I spent a few minutes looking at {business_name}'s online presence, and I wanted to share what I found.
+
+Here's the reality most business owners don't realize: when someone in {city} searches for a {niche}, they make a decision in seconds. Your website, your reviews, your Google listing — they all need to work together to say "call us."
+
+What I noticed about your business:
+{website_review}
+
+These aren't criticisms — they're opportunities. Small improvements here could mean the difference between getting that call... or losing it to a competitor.
+
+I'm Amine, a software engineer who specializes in helping local businesses get more customers through:
+• Modern, fast websites that convert visitors into calls
+• SEO that puts you at the top of "near me" searches
+• Systems that help you manage leads and follow up automatically
+
+Would you be open to a quick call to discuss? No pitch, no pressure — just some ideas tailored to {business_name}.
+
+Best,
+Amine
+
+See my work: https://aminebdev.vercel.app/""",
     ),
     EmailTemplate(
         id="followup",
         name="Follow-up",
-        subject="Re: {business_name} - Quick question about your website",
+        subject="Following up - {business_name}",
         body="""Hi again,
 
-Just floating this back up in case it got buried.
+Just wanted to float this back up in case it got buried under everything else.
 
-I noticed {business_name} could benefit from a few website tweaks — with some updates, you could turn more visitors into phone calls.
+I know running a {niche} business keeps you busy — the last thing you need is another sales pitch. So I'll keep it simple:
 
-Happy to share 2-3 specific ideas for {website} — no strings attached.
+If you've ever wondered why competitors seem to get more calls even though your work is just as good (or better), it usually comes down to online presence.
+
+I help businesses like {business_name} fix that — quickly and affordably.
+
+Happy to share 2-3 specific ideas for your business. No strings attached.
 
 Worth a quick chat?
 
-{sender_name}""",
+Best,
+Amine
+https://aminebdev.vercel.app/""",
     ),
     EmailTemplate(
         id="final",
         name="Final Follow-up",
-        subject="Closing the loop - {business_name}",
-        body="""Hi {business_name} team,
+        subject="Last note - {business_name}",
+        body="""Hi there,
 
-I'll keep this short — I know you're busy.
+I'll keep this short — I know you're busy running your business.
 
-If getting more calls from Google is on your radar, I'd love to help.
+If getting more calls from Google is on your radar for this year, I'd genuinely love to help {business_name} get there.
 
-If not, no worries — I'll stop reaching out.
+If the timing isn't right, no worries at all — I'll stop reaching out.
 
-Best of luck,
+Wishing you continued success either way.
+
+Best,
+Amine
+https://aminebdev.vercel.app/
 {sender_name}""",
     ),
 ]
@@ -166,10 +220,26 @@ async def update_lead(filename: str, lead_id: str, body: LeadUpdateRequest):
 
 @app.post("/api/runs", response_model=RunCreateResponse)
 async def create_run(body: RunCreateRequest) -> RunCreateResponse:
-    state = await run_manager.create_run(body)
-    return RunCreateResponse(
-        run_id=state.run_id, status=state.status, created_at=state.created_at
-    )
+    import traceback
+    try:
+        print(f"\n[API] ========== NEW RUN REQUEST ==========", flush=True)
+        print(f"[API] Niches: {body.niches}", flush=True)
+        print(f"[API] Locations: {body.locations}", flush=True)
+        print(f"[API] Max results: {body.max_results}", flush=True)
+        print(f"[API] Skip scrapers: {body.skip_scrapers}", flush=True)
+        print(f"[API] Fetch emails: {body.fetch_emails}", flush=True)
+        print(f"[API] ===========================================\n", flush=True)
+        
+        state = await run_manager.create_run(body)
+        
+        print(f"[API] Run created with ID: {state.run_id}", flush=True)
+        return RunCreateResponse(
+            run_id=state.run_id, status=state.status, created_at=state.created_at
+        )
+    except Exception as e:
+        print(f"[API] ERROR: {e}", flush=True)
+        print(f"[API] Traceback:\n{traceback.format_exc()}", flush=True)
+        raise
 
 
 @app.get("/api/runs/{run_id}", response_model=RunStatusResponse)
@@ -366,8 +436,21 @@ async def send_email(body: EmailSendRequest) -> EmailSendResponse:
             server.login(smtp_user, smtp_password)
             server.send_message(msg)
 
-        # Update lead status if lead_id provided
-        # TODO: Update Excel with outreach status
+        # Update lead status in Excel if lead_id and filename provided
+        if body.lead_id and body.filename:
+            try:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                update_lead_in_excel(
+                    filename=body.filename,
+                    lead_id=body.lead_id,
+                    patch={
+                        "Outreach_Status": "Contacted",
+                        "Last_Contacted": now,
+                    }
+                )
+            except Exception as e:
+                # Don't fail the email send if Excel update fails
+                print(f"[EMAIL] Warning: Could not update Excel: {e}", flush=True)
 
         return EmailSendResponse(
             success=True,
@@ -385,6 +468,143 @@ async def send_email(body: EmailSendRequest) -> EmailSendResponse:
         return EmailSendResponse(
             success=False, message=f"Failed to send email: {str(e)}"
         )
+
+
+@app.post("/api/email/batch", response_model=BatchEmailResponse)
+async def send_batch_emails(request: BatchEmailRequest) -> BatchEmailResponse:
+    """
+    Send emails to multiple recipients using a template.
+    
+    Includes delay between sends to avoid spam detection.
+    """
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    sender_name = os.getenv("SENDER_NAME", "Lead Prospector")
+
+    if not smtp_user or not smtp_password:
+        return BatchEmailResponse(
+            total=len(request.recipients),
+            sent=0,
+            failed=len(request.recipients),
+            results=[
+                BatchEmailResult(
+                    to_email=r.to_email,
+                    to_name=r.to_name,
+                    success=False,
+                    message="Email not configured"
+                ) for r in request.recipients
+            ]
+        )
+
+    # Get template
+    template = next((t for t in EMAIL_TEMPLATES if t.id == request.template_id), None)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    results: list[BatchEmailResult] = []
+    sent_count = 0
+    failed_count = 0
+
+    try:
+        # Connect once for all emails
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+
+            for i, recipient in enumerate(request.recipients):
+                try:
+                    # Use custom subject/body if provided, else use template
+                    subject = request.custom_subject or template.subject
+                    body_text = request.custom_body or template.body
+
+                    # Replace variables
+                    variables = {
+                        "sender_name": sender_name,
+                        **recipient.variables
+                    }
+                    for key, value in variables.items():
+                        placeholder = "{" + key + "}"
+                        subject = subject.replace(placeholder, str(value))
+                        body_text = body_text.replace(placeholder, str(value))
+
+                    # Create and send message
+                    msg = MIMEMultipart()
+                    msg["From"] = f"{sender_name} <{smtp_user}>"
+                    msg["To"] = f"{recipient.to_name} <{recipient.to_email}>"
+                    msg["Subject"] = subject
+                    msg.attach(MIMEText(body_text, "plain"))
+
+                    server.send_message(msg)
+
+                    # Update Excel if lead_id and filename provided
+                    if recipient.lead_id and request.filename:
+                        try:
+                            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                            update_lead_in_excel(
+                                filename=request.filename,
+                                lead_id=recipient.lead_id,
+                                patch={
+                                    "Outreach_Status": "Contacted",
+                                    "Last_Contacted": now,
+                                }
+                            )
+                        except Exception as excel_err:
+                            print(f"[BATCH] Warning: Could not update Excel for {recipient.to_name}: {excel_err}", flush=True)
+
+                    results.append(BatchEmailResult(
+                        to_email=recipient.to_email,
+                        to_name=recipient.to_name,
+                        success=True,
+                        message="Sent successfully",
+                        sent_at=datetime.utcnow()
+                    ))
+                    sent_count += 1
+
+                    # Delay between sends (except for last one)
+                    if i < len(request.recipients) - 1:
+                        await asyncio.sleep(request.delay_seconds)
+
+                except Exception as e:
+                    results.append(BatchEmailResult(
+                        to_email=recipient.to_email,
+                        to_name=recipient.to_name,
+                        success=False,
+                        message=str(e)
+                    ))
+                    failed_count += 1
+
+    except smtplib.SMTPAuthenticationError:
+        # Auth failed - mark all remaining as failed
+        for recipient in request.recipients:
+            if not any(r.to_email == recipient.to_email for r in results):
+                results.append(BatchEmailResult(
+                    to_email=recipient.to_email,
+                    to_name=recipient.to_name,
+                    success=False,
+                    message="SMTP authentication failed"
+                ))
+                failed_count += 1
+
+    except Exception as e:
+        # Connection failed - mark all remaining as failed
+        for recipient in request.recipients:
+            if not any(r.to_email == recipient.to_email for r in results):
+                results.append(BatchEmailResult(
+                    to_email=recipient.to_email,
+                    to_name=recipient.to_name,
+                    success=False,
+                    message=f"Connection error: {str(e)}"
+                ))
+                failed_count += 1
+
+    return BatchEmailResponse(
+        total=len(request.recipients),
+        sent=sent_count,
+        failed=failed_count,
+        results=results
+    )
 
 
 @app.post("/api/email/preview")

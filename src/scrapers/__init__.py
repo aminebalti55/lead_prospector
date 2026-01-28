@@ -8,15 +8,21 @@ This package provides scrapers for multiple data sources:
 - BBBScraper: Better Business Bureau listings
 - MantaScraper: Manta business directory
 
-All scrapers use Playwright's sync API in a dedicated thread pool.
-This approach avoids asyncio event loop issues on Windows while
-maintaining async-compatible interfaces.
+All scrapers use undetected-chromedriver for browser automation,
+providing excellent anti-detection and Windows compatibility.
 """
 
 from .base import (
     BusinessLead,
     RateLimiter,
     BaseScraper,
+)
+
+from .browser_manager import (
+    BrowserSession,
+    get_browser_executor,
+    shutdown_browser_executor,
+    create_driver,
     USER_AGENTS,
 )
 
@@ -41,16 +47,16 @@ from .email_extractor import (
     extract_emails_for_leads,
 )
 
-from .windows_compat import (
-    get_playwright_executor,
-    shutdown_playwright_executor,
-)
-
 __all__ = [
     # Base classes
     "BusinessLead",
     "RateLimiter",
     "BaseScraper",
+    # Browser manager
+    "BrowserSession",
+    "get_browser_executor",
+    "shutdown_browser_executor",
+    "create_driver",
     "USER_AGENTS",
     # Scrapers
     "GoogleMapsScraper",
@@ -69,7 +75,4 @@ __all__ = [
     "EmailExtractor",
     "EmailResult",
     "extract_emails_for_leads",
-    # Windows compatibility
-    "get_playwright_executor",
-    "shutdown_playwright_executor",
 ]

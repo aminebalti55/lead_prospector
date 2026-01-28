@@ -1,24 +1,31 @@
 """
-Manta scraper implementation.
+Manta scraper implementation using undetected-chromedriver.
 
 Scrapes business listings from Manta business directory.
-Uses sync Playwright API in a thread pool to avoid Windows asyncio issues.
+Uses Selenium with anti-detection for reliable scraping.
 Reference: docs/scraping/MANTA.md
 """
 
-import asyncio
-import random
 import re
 import time
+import random
 import logging
 from typing import List, Optional
-from urllib.parse import quote_plus, urlencode, urlparse, parse_qs, unquote
 from datetime import datetime
+from urllib.parse import urlencode, urlparse, parse_qs, unquote
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 from .base import BaseScraper, BusinessLead
-from .windows_compat import get_playwright_executor
+from .browser_manager import (
+    get_browser_executor,
+    safe_get,
+    safe_find_elements,
+    scroll_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +34,9 @@ class MantaScraper(BaseScraper):
     """
     Scraper for Manta business directory listings.
 
+    Uses undetected-chromedriver for anti-bot evasion.
     Difficulty: MEDIUM
-    Rate limiting: 3-6s between searches, 100/hour
+    Rate limiting: 2-5s between requests, 150/hour
     """
 
     SOURCE_NAME = "manta"
@@ -40,176 +48,170 @@ class MantaScraper(BaseScraper):
         """Search Manta for businesses."""
         logger.info(f"Searching Manta: {business_type} in {city}, {state}")
 
-        def _do_search(context):
-            return self._search_sync(context, business_type, city, state, max_results)
+        def _do_search(driver):
+            return self._search_sync(driver, business_type, city, state, max_results)
         
-        loop = asyncio.get_running_loop()
-        executor = get_playwright_executor()
-        
-        return await loop.run_in_executor(
-            executor,
-            lambda: _do_search(self._context)
-        )
+        return await self.run_in_browser(_do_search)
 
-    def _search_sync(
-        self, context, business_type: str, city: str, state: str, max_results: int
-    ) -> List[BusinessLead]:
-        """Synchronous search implementation (runs in thread pool)."""
+    def _search_sync(self, driver, business_type: str, city: str, state: str,
+                     max_results: int) -> List[BusinessLead]:
+        """Synchronous search implementation."""
         leads: List[BusinessLead] = []
         page_num = 1
-        page = context.new_page()
-
-        try:
-            # Visit homepage first to establish session
-            page.goto("https://www.manta.com", wait_until="domcontentloaded", timeout=15000)
-            time.sleep(random.uniform(1.0, 2.0))
-
-            while len(leads) < max_results:
-                params = {
-                    "search": business_type,
-                    "country": "United States",
-                    "state": state,
-                    "city": city,
-                    "page_size": 25,
-                    "pg": page_num,
-                }
-                url = f"{self.BASE_URL}?{urlencode(params)}"
-
-                self.rate_limiter.wait_sync(self.SOURCE_NAME)
-                self.rate_limiter.record_request(self.SOURCE_NAME)
-                
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-                try:
-                    selectors = ['a[href^="/c/"]', ".company-name"]
-                    found = False
-                    for selector in selectors:
-                        try:
-                            page.wait_for_selector(selector, timeout=10000)
-                            found = True
-                            break
-                        except PlaywrightTimeout:
-                            continue
-
-                    if not found:
-                        page.wait_for_load_state("networkidle", timeout=20000)
-
-                    time.sleep(random.uniform(2.0, 3.0))
-
-                    page_text = page.inner_text("body")
-                    if len(page_text.strip()) < 200:
-                        logger.warning("Manta page appears empty or blocked")
-                        break
-
-                except PlaywrightTimeout:
-                    logger.warning("Manta content didn't render")
+        
+        # Visit homepage first to establish session
+        safe_get(driver, "https://www.manta.com", wait_time=2.0)
+        
+        while len(leads) < max_results:
+            params = {
+                "search": business_type,
+                "country": "United States",
+                "state": state,
+                "city": city,
+                "page_size": 25,
+                "pg": page_num,
+            }
+            url = f"{self.BASE_URL}?{urlencode(params)}"
+            
+            self.wait_and_record_sync()
+            
+            if not safe_get(driver, url, wait_time=2.5):
+                break
+            
+            # Wait for results
+            time.sleep(random.uniform(2.0, 3.5))
+            
+            # Check for empty/blocked page
+            try:
+                page_text = driver.find_element(By.TAG_NAME, 'body').text
+                if len(page_text.strip()) < 300:
+                    logger.warning("Manta page appears empty or blocked")
                     break
-
-                # Extract using JavaScript
-                extracted_data = page.evaluate("""() => {
-                    const results = [];
-                    const seen = new Set();
-                    const links = document.querySelectorAll('a[href^="/c/"]:not([href*="category"])');
-                    
-                    for (const link of links) {
-                        const href = link.getAttribute('href');
-                        const name = link.innerText.trim();
-                        
-                        if (!name || name.length < 2 || seen.has(href)) continue;
-                        seen.add(href);
-                        
-                        let card = link.parentElement;
-                        let attempts = 0;
-                        while (card && card.innerText.length < 50 && attempts < 10) {
-                            card = card.parentElement;
-                            attempts++;
-                        }
-                        
-                        const cardText = card ? card.innerText : '';
-                        const phoneMatch = cardText.match(/\\(\\d{3}\\)\\s*\\d{3}-\\d{4}/);
-                        const isClaimed = cardText.includes('CLAIMED');
-                        const isPromoted = cardText.includes('★') || cardText.includes('Promoted');
-                        
-                        let address = null;
-                        const lines = cardText.split('\\n');
-                        for (const line of lines) {
-                            const trimmed = line.trim();
-                            if (/^\\d+\\s+\\w+/.test(trimmed) && trimmed.length < 100) {
-                                address = trimmed;
-                                break;
-                            }
-                        }
-                        
-                        const empMatch = cardText.match(/(\\d+)\\s*employees?/i);
-                        const yearsMatch = cardText.match(/(\\d+)\\s*years?\\s*in\\s*business/i);
-                        
-                        results.push({
-                            name: name,
-                            href: href,
-                            phone: phoneMatch ? phoneMatch[0] : null,
-                            address: address,
-                            is_claimed: isClaimed,
-                            is_promoted: isPromoted,
-                            employee_count: empMatch ? parseInt(empMatch[1]) : null,
-                            years_in_business: yearsMatch ? parseInt(yearsMatch[1]) : null
-                        });
-                    }
-                    
-                    return results;
-                }""")
-
-                page_leads = []
-                if extracted_data:
-                    for data in extracted_data:
-                        if data.get("is_promoted"):
-                            continue
-
-                        name = data.get("name", "").strip()
-                        href = data.get("href", "")
-
-                        if not name or not href:
-                            continue
-
-                        detail_url = f"https://www.manta.com{href}" if href.startswith("/") else href
-
-                        extra_data = {}
-                        if data.get("employee_count"):
-                            extra_data["employee_count"] = data["employee_count"]
-                        if data.get("years_in_business"):
-                            extra_data["years_in_business"] = data["years_in_business"]
-
-                        lead = BusinessLead(
-                            source=self.SOURCE_NAME,
-                            name=name,
-                            phone=self.clean_phone(data.get("phone")),
-                            address=data.get("address"),
-                            city=city,
-                            state=state,
-                            is_claimed=data.get("is_claimed", False),
-                            is_sponsored=False,
-                            detail_url=detail_url,
-                            extra_data=extra_data,
-                        )
-                        page_leads.append(lead)
-
-                if not page_leads:
-                    break
-
-                leads.extend(page_leads)
-                page_num += 1
-
-                if len(leads) >= max_results:
-                    leads = leads[:max_results]
-                    break
-
-            logger.info(f"Found {len(leads)} leads from Manta")
-
-        except Exception as e:
-            logger.error(f"Manta search failed: {e}")
-        finally:
-            page.close()
-
+            except Exception:
+                break
+            
+            # Extract listings
+            page_leads = self._extract_listings(driver, city, state)
+            
+            if not page_leads:
+                logger.debug("No more listings found")
+                break
+            
+            leads.extend(page_leads)
+            page_num += 1
+            
+            if len(leads) >= max_results:
+                leads = leads[:max_results]
+                break
+        
+        logger.info(f"Found {len(leads)} leads from Manta")
         return leads
+
+    def _extract_listings(self, driver, city: str, state: str) -> List[BusinessLead]:
+        """Extract business listings from the current page."""
+        leads = []
+        
+        # Find company links
+        elements = driver.find_elements(By.CSS_SELECTOR, 'a[href^="/c/"]:not([href*="category"])')
+        
+        seen_urls = set()
+        
+        for elem in elements:
+            try:
+                name = elem.text.strip()
+                href = elem.get_attribute('href')
+                
+                if not name or len(name) < 2:
+                    continue
+                if not href:
+                    continue
+                if href in seen_urls:
+                    continue
+                
+                seen_urls.add(href)
+                
+                # Get container for more info
+                container = self._get_listing_container(elem)
+                container_text = container.text if container else ""
+                
+                # Skip promoted listings
+                if '★' in container_text or 'Promoted' in container_text:
+                    continue
+                
+                # Extract phone
+                phone = self._extract_phone(container_text)
+                
+                # Extract address
+                address = self._extract_address(container_text)
+                
+                # Check claimed status
+                is_claimed = 'CLAIMED' in container_text
+                
+                # Extract employee count
+                emp_match = re.search(r'(\d+)\s*employees?', container_text, re.IGNORECASE)
+                employee_count = int(emp_match.group(1)) if emp_match else None
+                
+                # Extract years in business
+                years_match = re.search(r'(\d+)\s*years?\s*in\s*business', container_text, re.IGNORECASE)
+                years_in_business = int(years_match.group(1)) if years_match else None
+                
+                # Build full URL
+                if href.startswith('/'):
+                    href = f"https://www.manta.com{href}"
+                
+                extra_data = {}
+                if employee_count:
+                    extra_data["employee_count"] = employee_count
+                if years_in_business:
+                    extra_data["years_in_business"] = years_in_business
+                
+                lead = BusinessLead(
+                    source=self.SOURCE_NAME,
+                    name=name,
+                    phone=self.clean_phone(phone),
+                    address=address,
+                    city=city,
+                    state=state,
+                    is_claimed=is_claimed,
+                    is_sponsored=False,
+                    detail_url=href,
+                    extra_data=extra_data,
+                )
+                leads.append(lead)
+                
+            except Exception as e:
+                logger.debug(f"Error extracting listing: {e}")
+                continue
+        
+        return leads
+
+    def _get_listing_container(self, element):
+        """Get the parent container of a listing element."""
+        try:
+            container = element
+            for _ in range(10):
+                container = container.find_element(By.XPATH, '..')
+                if len(container.text) > 50:
+                    return container
+            return element.find_element(By.XPATH, '..')
+        except Exception:
+            return None
+
+    def _extract_phone(self, text: str) -> Optional[str]:
+        """Extract phone from text."""
+        match = re.search(r'\(\d{3}\)\s*\d{3}-\d{4}', text)
+        if match:
+            return match.group()
+        return None
+
+    def _extract_address(self, text: str) -> Optional[str]:
+        """Extract address from text."""
+        lines = text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if re.match(r'^\d+\s+\w+', line) and len(line) < 100:
+                return line
+        return None
 
     def _unwrap_redirect_url(self, url: str) -> str:
         """Unwrap Manta's urlverify redirect URLs."""
@@ -225,68 +227,73 @@ class MantaScraper(BaseScraper):
         if not lead.detail_url:
             return lead
 
-        def _do_get_details(context):
-            return self._get_details_sync(context, lead)
+        def _do_get_details(driver):
+            return self._get_details_sync(driver, lead)
         
-        loop = asyncio.get_running_loop()
-        executor = get_playwright_executor()
-        
-        return await loop.run_in_executor(
-            executor,
-            lambda: _do_get_details(self._context)
-        )
+        return await self.run_in_browser(_do_get_details)
 
-    def _get_details_sync(self, context, lead: BusinessLead) -> BusinessLead:
+    def _get_details_sync(self, driver, lead: BusinessLead) -> BusinessLead:
         """Synchronous get_details implementation."""
-        page = context.new_page()
-
+        self.wait_and_record_sync()
+        
+        if not safe_get(driver, lead.detail_url, wait_time=2.0):
+            return lead
+        
+        time.sleep(random.uniform(1.5, 2.5))
+        
         try:
-            self.rate_limiter.wait_sync(self.SOURCE_NAME)
-            self.rate_limiter.record_request(self.SOURCE_NAME)
+            page_text = driver.find_element(By.TAG_NAME, 'body').text
             
-            page.goto(lead.detail_url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(random.uniform(1.0, 2.0))
-
-            page_text = page.inner_text("body")
-
+            # Extract phone
             if not lead.phone:
-                phone_el = page.query_selector('a[href^="tel:"]')
-                if phone_el:
-                    lead.phone = self.clean_phone(phone_el.inner_text())
-
+                try:
+                    phone_el = driver.find_element(By.CSS_SELECTOR, 'a[href^="tel:"]')
+                    lead.phone = self.clean_phone(phone_el.text)
+                except NoSuchElementException:
+                    pass
+            
+            # Extract website
             if not lead.website:
-                website_el = page.query_selector('a[href*="/urlverify"]')
-                if website_el:
-                    href = website_el.get_attribute("href")
-                    lead.website = self._unwrap_redirect_url(href)
-
-            address_el = page.query_selector('[data-testid="business-address"], .address')
-            if address_el:
-                lead.address = address_el.inner_text()
-
-            sic_match = re.search(r"SIC\s*(?:Code)?:\s*(\d+)", page_text)
+                try:
+                    website_el = driver.find_element(By.CSS_SELECTOR, 'a[href*="/urlverify"]')
+                    href = website_el.get_attribute('href')
+                    if href:
+                        lead.website = self._unwrap_redirect_url(href)
+                except NoSuchElementException:
+                    pass
+            
+            # Extract address
+            try:
+                address_el = driver.find_element(By.CSS_SELECTOR, '[data-testid="business-address"], .address')
+                lead.address = address_el.text.strip()
+            except NoSuchElementException:
+                pass
+            
+            # Extract SIC code
+            sic_match = re.search(r'SIC\s*(?:Code)?:\s*(\d+)', page_text)
             if sic_match:
                 lead.extra_data["sic_code"] = sic_match.group(1)
-
-            contact_match = re.search(r"Contact(?:\s*Name)?:\s*([A-Z][a-z]+\s+[A-Z][a-z]+)", page_text)
+            
+            # Extract contact name
+            contact_match = re.search(r'Contact(?:\s*Name)?:\s*([A-Z][a-z]+\s+[A-Z][a-z]+)', page_text)
             if contact_match:
                 lead.extra_data["contact_name"] = contact_match.group(1)
-
-            emp_match = re.search(r"Employees?:\s*(\d+)", page_text)
+            
+            # Extract employee count
+            emp_match = re.search(r'Employees?:\s*(\d+)', page_text)
             if emp_match:
                 lead.extra_data["employee_count"] = int(emp_match.group(1))
-
-            date_match = re.search(r"(?:Founded|Opened|Started):\s*(\d{4})", page_text)
+            
+            # Extract years in business
+            date_match = re.search(r'(?:Founded|Opened|Started):\s*(\d{4})', page_text)
             if date_match:
                 start_year = int(date_match.group(1))
                 lead.extra_data["year_started"] = start_year
                 lead.extra_data["years_in_business"] = datetime.now().year - start_year
-
+            
             logger.debug(f"Got Manta details for: {lead.name}")
-
+            
         except Exception as e:
-            logger.warning(f"Failed to get Manta details for {lead.name}: {e}")
-        finally:
-            page.close()
-
+            logger.warning(f"Error getting Manta details for {lead.name}: {e}")
+        
         return lead

@@ -135,6 +135,7 @@ class EmailSendRequest(BaseModel):
     subject: str
     body: str
     lead_id: Optional[str] = None
+    filename: Optional[str] = None  # Excel file to update
 
 
 class EmailSendResponse(BaseModel):
@@ -152,3 +153,35 @@ class EmailTemplate(BaseModel):
 
 class EmailTemplatesResponse(BaseModel):
     templates: List[EmailTemplate]
+
+
+# Batch Email Models
+class BatchEmailRecipient(BaseModel):
+    to_email: str
+    to_name: str
+    lead_id: Optional[str] = None
+    variables: Dict[str, Any] = {}  # For template personalization
+
+
+class BatchEmailRequest(BaseModel):
+    template_id: str
+    recipients: List[BatchEmailRecipient]
+    custom_subject: Optional[str] = None  # Override template subject
+    custom_body: Optional[str] = None  # Override template body
+    delay_seconds: float = 2.0  # Delay between emails to avoid spam flags
+    filename: Optional[str] = None  # Excel file to update after sending
+
+
+class BatchEmailResult(BaseModel):
+    to_email: str
+    to_name: str
+    success: bool
+    message: str
+    sent_at: Optional[datetime] = None
+
+
+class BatchEmailResponse(BaseModel):
+    total: int
+    sent: int
+    failed: int
+    results: List[BatchEmailResult]

@@ -11,9 +11,11 @@ beautifulsoup4>=4.12.0
 lxml>=5.1.0
 html5lib>=1.1
 
-# Browser automation (for web scraping)
-playwright>=1.41.0
-playwright-stealth>=1.0.6  # Evade bot detection
+# Browser automation (undetected Chrome - anti-bot)
+undetected-chromedriver>=3.5.0
+selenium>=4.20.0
+webdriver-manager>=4.0.0
+setuptools>=69.0.0  # Required for Python 3.12+ (provides distutils)
 
 # Data handling (use latest compatible versions)
 pandas>=2.2.0

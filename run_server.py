@@ -4,9 +4,11 @@ Lead Prospector Backend Server Runner
 
 This script starts the FastAPI backend server with uvicorn.
 
-The application uses sync Playwright API in a dedicated thread pool to avoid
-asyncio event loop compatibility issues on Windows. This approach works
-regardless of which event loop policy uvicorn uses.
+The application uses undetected-chromedriver for browser automation,
+which provides:
+- Excellent anti-bot detection evasion
+- Zero asyncio subprocess issues (uses WebDriver HTTP protocol)
+- Automatic Chrome driver management
 
 Usage:
     python run_server.py
@@ -15,7 +17,11 @@ Usage:
 """
 
 import sys
+import os
 import argparse
+
+# Force unbuffered output for immediate logging
+os.environ["PYTHONUNBUFFERED"] = "1"
 
 
 def main():
@@ -37,8 +43,8 @@ def main():
     print(f"  API Docs:     http://localhost:{args.port}/docs")
     print(f"  Auto-reload:  {not args.no_reload}")
     print()
-    print("  NOTE: Playwright runs via sync API in a thread pool")
-    print("        This avoids Windows asyncio subprocess issues")
+    print("  Browser:      undetected-chromedriver (anti-detection)")
+    print("  Protocol:     WebDriver (HTTP) - no asyncio issues")
     print("=" * 60)
     print()
 

@@ -1,22 +1,34 @@
 """
-Google Maps scraper implementation.
+Google Maps scraper implementation using undetected-chromedriver.
 
 Scrapes business listings from Google Maps search results.
-Uses sync Playwright API in a thread pool to avoid Windows asyncio issues.
+Uses Selenium with anti-detection for reliable scraping.
 Reference: docs/scraping/GOOGLE_MAPS.md
 """
 
-import asyncio
-import random
 import re
 import time
+import random
 import logging
 from typing import List, Optional
+from urllib.parse import quote_plus
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 from .base import BaseScraper, BusinessLead
-from .windows_compat import get_playwright_executor
+from .browser_manager import (
+    get_browser_executor,
+    safe_get,
+    safe_find_element,
+    safe_find_elements,
+    scroll_element,
+    get_text_safe,
+    get_attribute_safe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +37,9 @@ class GoogleMapsScraper(BaseScraper):
     """
     Scraper for Google Maps business listings.
 
+    Uses undetected-chromedriver for anti-bot evasion.
     Difficulty: HIGH (aggressive anti-bot measures)
-    Rate limiting: 5-10s between requests, 100/hour
+    Rate limiting: 3-6s between requests, 150/hour
     """
 
     SOURCE_NAME = "google_maps"
@@ -47,203 +60,247 @@ class GoogleMapsScraper(BaseScraper):
         Returns:
             List of BusinessLead objects
         """
-        from urllib.parse import quote_plus
-        
         query = f"{business_type} in {city} {state}"
         url = f"{self.BASE_URL}/{quote_plus(query)}?hl=en"
 
+        print(f"[GOOGLE MAPS] Searching: {query}", flush=True)
+        print(f"[GOOGLE MAPS] URL: {url}", flush=True)
         logger.info(f"Searching Google Maps: {query}")
-        await self.wait_and_record()
 
-        def _do_search(context):
-            return self._search_sync(context, url, city, state, max_results)
+        def _do_search(driver):
+            print("[GOOGLE MAPS] Starting sync search...", flush=True)
+            result = self._search_sync(driver, url, city, state, max_results)
+            print(f"[GOOGLE MAPS] Sync search complete, found {len(result)} leads", flush=True)
+            return result
         
-        loop = asyncio.get_running_loop()
-        executor = get_playwright_executor()
-        
-        return await loop.run_in_executor(
-            executor,
-            lambda: _do_search(self._context)
-        )
+        return await self.run_in_browser(_do_search)
 
-    def _search_sync(
-        self, context, url: str, city: str, state: str, max_results: int
-    ) -> List[BusinessLead]:
+    def _search_sync(self, driver, url: str, city: str, state: str, max_results: int) -> List[BusinessLead]:
         """Synchronous search implementation (runs in thread pool)."""
-        page = context.new_page()
         leads: List[BusinessLead] = []
+        
+        print(f"[GMAPS_SYNC] Starting sync search...", flush=True)
+        print(f"[GMAPS_SYNC] URL: {url}", flush=True)
+        
+        self.wait_and_record_sync()
+        print(f"[GMAPS_SYNC] Rate limit wait complete", flush=True)
+        
+        if not safe_get(driver, url, wait_time=3.0):
+            print(f"[GMAPS_SYNC] ERROR: Failed to load Google Maps page!", flush=True)
+            logger.error("Failed to load Google Maps")
+            return leads
+        
+        print(f"[GMAPS_SYNC] Page loaded successfully", flush=True)
 
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        # Handle cookie consent
+        self._handle_cookie_consent(driver)
+        print(f"[GMAPS_SYNC] Cookie consent handled", flush=True)
+        
+        # Wait for results to load
+        time.sleep(2)
+        print(f"[GMAPS_SYNC] Post-load wait complete", flush=True)
+        
+        # Find the results container (scrollable panel)
+        results_container = self._find_results_container(driver)
+        if not results_container:
+            print(f"[GMAPS_SYNC] WARNING: Could not find results container!", flush=True)
+            logger.warning("Could not find results container")
+            return leads
+        
+        print(f"[GMAPS_SYNC] Found results container", flush=True)
 
-            # Handle Google cookie consent dialog
-            self._handle_cookie_consent_sync(page)
-
-            # Wait for results feed to load
-            try:
-                page.wait_for_selector('div[role="feed"]', timeout=15000)
-            except PlaywrightTimeout:
-                logger.warning("No results feed found - may be blocked or no results")
-                return leads
-
-            # Scroll to load more results
-            self._scroll_for_results_sync(page, max_results)
-
-            # Extract listings
-            articles = page.query_selector_all('div[role="feed"] > div')
-
-            for article in articles:
-                if len(leads) >= max_results:
-                    break
-
-                try:
-                    lead = self._extract_listing_sync(article, city, state)
-                    if lead and not lead.is_sponsored:
-                        leads.append(lead)
-                except Exception as e:
-                    logger.debug(f"Error extracting listing: {e}")
-                    continue
-
-            logger.info(f"Found {len(leads)} leads from Google Maps")
-
-        except Exception as e:
-            logger.error(f"Google Maps search failed: {e}")
-        finally:
-            page.close()
-
-        return leads
-
-    def _scroll_for_results_sync(self, page: Page, target_count: int) -> None:
-        """Scroll the results feed to load more listings."""
-        feed = page.query_selector('div[role="feed"]')
-        if not feed:
-            return
-
-        previous_count = 0
-        max_scrolls = min(target_count // 5 + 3, 15)
-
-        for i in range(max_scrolls):
-            feed.evaluate("el => el.scrollTop = el.scrollHeight")
-            time.sleep(random.uniform(1.0, 2.0))
-
-            articles = page.query_selector_all('div[role="feed"] > div')
-            current_count = len(articles)
-
-            if current_count >= target_count:
+        # Scroll to load more results
+        print(f"[GMAPS_SYNC] Scrolling for results (target: {max_results})...", flush=True)
+        self._scroll_for_results(driver, results_container, max_results)
+        print(f"[GMAPS_SYNC] Scrolling complete", flush=True)
+        
+        # Extract listings
+        listings = self._get_listing_elements(driver)
+        print(f"[GMAPS_SYNC] Found {len(listings)} listing elements", flush=True)
+        logger.info(f"Found {len(listings)} listing elements")
+        
+        for listing in listings:
+            if len(leads) >= max_results:
                 break
-            if current_count == previous_count:
-                time.sleep(1)
-                articles = page.query_selector_all('div[role="feed"] > div')
-                if len(articles) == current_count:
-                    break
-
-            previous_count = current_count
-
-    def _extract_listing_sync(
-        self, element, city: str, state: str
-    ) -> Optional[BusinessLead]:
-        """Extract business data from a listing element (sync)."""
-
-        # Check if this is a valid listing (has a link)
-        link = element.query_selector("a.hfpxzc")
-        if not link:
-            return None
-
-        # Get detail URL
-        detail_url = link.get_attribute("href")
-
-        # Check for sponsored content
-        text_content = element.inner_text()
-        is_sponsored = self._is_sponsored_text(text_content) or self._is_sponsored_url(
-            detail_url
-        )
-
-        if is_sponsored:
-            return BusinessLead(
-                source=self.SOURCE_NAME,
-                name="",
-                city=city,
-                state=state,
-                is_sponsored=True,
-            )
-
-        # Extract name
-        name_el = element.query_selector(".qBF1Pd.fontHeadlineSmall")
-        name = name_el.inner_text() if name_el else None
-
-        if not name:
-            aria_label = link.get_attribute("aria-label")
-            name = aria_label
-
-        if not name:
-            return None
-
-        # Extract rating
-        rating_el = element.query_selector(".MW4etd")
-        rating_text = rating_el.inner_text() if rating_el else None
-        rating = self.clean_rating(rating_text)
-
-        # Extract review count
-        review_el = element.query_selector(".UY7F9")
-        review_text = review_el.inner_text() if review_el else None
-        review_count = self.clean_review_count(review_text)
-
-        # Extract website if available
-        website = None
-        website_selectors = [
-            'a[href]:has-text("Website")',
-            'a[aria-label*="website"]',
-            "a.lcr4fd",
-        ]
-        for selector in website_selectors:
+            
             try:
-                website_el = element.query_selector(selector)
-                if website_el:
-                    href = website_el.get_attribute("href")
-                    if href and not href.startswith("/aclk") and "google.com" not in href:
-                        website = href
-                        break
-            except Exception:
+                lead = self._extract_listing(driver, listing, city, state)
+                if lead and not lead.is_sponsored:
+                    leads.append(lead)
+            except Exception as e:
+                logger.debug(f"Error extracting listing: {e}")
                 continue
 
-        # Extract phone
-        phone = self._extract_phone_from_text(text_content)
+        logger.info(f"Extracted {len(leads)} leads from Google Maps")
+        return leads
 
-        # Extract address
-        address = self._extract_address_from_text(text_content)
+    def _find_results_container(self, driver) -> Optional[any]:
+        """Find the scrollable results panel."""
+        selectors = [
+            'div[role="feed"]',
+            'div.m6QErb[aria-label]',
+            'div.m6QErb.DxyBCb',
+        ]
+        
+        for selector in selectors:
+            try:
+                container = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                return container
+            except TimeoutException:
+                continue
+        
+        return None
 
-        # Extract categories
-        categories = self._extract_categories_from_text(text_content)
+    def _scroll_for_results(self, driver, container, target_count: int, max_scrolls: int = 15):
+        """Scroll the results panel to load more listings."""
+        previous_count = 0
+        
+        for i in range(max_scrolls):
+            # Scroll the container
+            driver.execute_script(
+                "arguments[0].scrollTop = arguments[0].scrollHeight", 
+                container
+            )
+            time.sleep(random.uniform(1.0, 2.0))
+            
+            # Check current count
+            listings = self._get_listing_elements(driver)
+            current_count = len(listings)
+            
+            if current_count >= target_count:
+                logger.debug(f"Reached target count: {current_count}")
+                break
+            
+            if current_count == previous_count:
+                # No new results loaded
+                time.sleep(1)
+                listings = self._get_listing_elements(driver)
+                if len(listings) == current_count:
+                    logger.debug(f"No more results to load at {current_count}")
+                    break
+            
+            previous_count = current_count
 
-        return BusinessLead(
-            source=self.SOURCE_NAME,
-            name=name.strip(),
-            phone=self.clean_phone(phone),
-            website=website,
-            address=address,
-            city=city,
-            state=state,
-            rating=rating,
-            review_count=review_count,
-            categories=categories,
-            is_claimed=False,
-            is_sponsored=is_sponsored,
-            detail_url=detail_url,
-        )
+    def _get_listing_elements(self, driver) -> list:
+        """Get all listing elements from the page."""
+        selectors = [
+            'div.Nv2PK',  # Main listing container
+            'a[href*="/maps/place/"]',  # Place links
+        ]
+        
+        for selector in selectors:
+            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            if elements:
+                return elements
+        
+        return []
 
-    def _is_sponsored_text(self, text: str) -> bool:
-        """Check if text contains sponsored indicators."""
-        sponsored_terms = ["Sponsored", "Sponsorisé", "Ad", "Annonce"]
-        return any(term in text for term in sponsored_terms)
+    def _extract_listing(self, driver, element, city: str, state: str) -> Optional[BusinessLead]:
+        """Extract business data from a listing element."""
+        try:
+            # Get the clickable link
+            link = None
+            try:
+                link = element.find_element(By.CSS_SELECTOR, 'a.hfpxzc')
+            except NoSuchElementException:
+                if element.tag_name == 'a':
+                    link = element
+            
+            if not link:
+                return None
+            
+            detail_url = link.get_attribute('href')
+            
+            # Check for sponsored
+            text_content = element.text
+            if self._is_sponsored(text_content, detail_url):
+                return BusinessLead(
+                    source=self.SOURCE_NAME,
+                    name="",
+                    city=city,
+                    state=state,
+                    is_sponsored=True,
+                )
+            
+            # Extract name
+            name = None
+            name_selectors = [
+                '.qBF1Pd.fontHeadlineSmall',
+                '.fontHeadlineSmall',
+                'div.NrDZNb',
+            ]
+            for sel in name_selectors:
+                try:
+                    name_el = element.find_element(By.CSS_SELECTOR, sel)
+                    name = name_el.text.strip()
+                    if name:
+                        break
+                except NoSuchElementException:
+                    continue
+            
+            if not name:
+                aria_label = link.get_attribute('aria-label')
+                name = aria_label.strip() if aria_label else None
+            
+            if not name:
+                return None
+            
+            # Extract rating
+            rating = None
+            try:
+                rating_el = element.find_element(By.CSS_SELECTOR, '.MW4etd')
+                rating = self.clean_rating(rating_el.text)
+            except NoSuchElementException:
+                pass
+            
+            # Extract review count
+            review_count = None
+            try:
+                review_el = element.find_element(By.CSS_SELECTOR, '.UY7F9')
+                review_count = self.clean_review_count(review_el.text)
+            except NoSuchElementException:
+                pass
+            
+            # Extract phone from text
+            phone = self._extract_phone(text_content)
+            
+            # Extract address
+            address = self._extract_address(text_content)
+            
+            # Extract categories
+            categories = self._extract_categories(text_content)
+            
+            return BusinessLead(
+                source=self.SOURCE_NAME,
+                name=name,
+                phone=self.clean_phone(phone),
+                city=city,
+                state=state,
+                rating=rating,
+                review_count=review_count,
+                address=address,
+                categories=categories,
+                is_sponsored=False,
+                detail_url=detail_url,
+            )
+            
+        except Exception as e:
+            logger.debug(f"Error extracting listing: {e}")
+            return None
 
-    def _is_sponsored_url(self, url: Optional[str]) -> bool:
-        """Check if URL is an ad tracking URL."""
-        if not url:
-            return False
-        return "/aclk?" in url or "adurl=" in url
+    def _is_sponsored(self, text: str, url: Optional[str]) -> bool:
+        """Check if listing is sponsored/ad."""
+        sponsored_terms = ["Sponsored", "Sponsorisé", "Ad", "Annonce", "Publicité"]
+        if any(term.lower() in text.lower() for term in sponsored_terms):
+            return True
+        if url and ("/aclk?" in url or "adurl=" in url):
+            return True
+        return False
 
-    def _extract_phone_from_text(self, text: str) -> Optional[str]:
-        """Extract phone number from text content."""
+    def _extract_phone(self, text: str) -> Optional[str]:
+        """Extract phone number from text."""
         patterns = [
             r"\+1[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}",
             r"\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}",
@@ -254,114 +311,134 @@ class GoogleMapsScraper(BaseScraper):
                 return match.group()
         return None
 
-    def _extract_address_from_text(self, text: str) -> Optional[str]:
-        """Extract address from text content."""
+    def _extract_address(self, text: str) -> Optional[str]:
+        """Extract address from text."""
         lines = text.split("\n")
         for line in lines:
             line = line.strip()
-            if re.match(r"^\d+\s+\w+", line):
+            # Look for street address pattern
+            if re.match(r"^\d+\s+\w+", line) and len(line) < 100:
                 return line
         return None
 
-    def _extract_categories_from_text(self, text: str) -> List[str]:
+    def _extract_categories(self, text: str) -> List[str]:
         """Extract business categories from text."""
         common_categories = [
-            "Plumber", "Plumbing", "Dentist", "Dental",
+            "Plumber", "Plumbing", "Dentist", "Dental", "Clinic",
             "Pest Control", "HVAC", "Electrician", "Roofing",
-            "Contractor", "Locksmith",
+            "Contractor", "Locksmith", "Medical", "Doctor",
         ]
         found = []
+        text_lower = text.lower()
         for cat in common_categories:
-            if cat.lower() in text.lower():
+            if cat.lower() in text_lower:
                 found.append(cat)
         return found
+
+    def _handle_cookie_consent(self, driver):
+        """Handle Google cookie consent dialog if present."""
+        consent_selectors = [
+            'button[aria-label*="Accept"]',
+            'button:contains("Accept all")',
+            '#L2AGLb',  # Google's accept button ID
+            'button.VfPpkd-LgbsSe-OWXEXe-k8QpJ',
+        ]
+        
+        for selector in consent_selectors:
+            try:
+                btn = driver.find_element(By.CSS_SELECTOR, selector)
+                btn.click()
+                time.sleep(1)
+                logger.debug("Clicked cookie consent")
+                return
+            except NoSuchElementException:
+                continue
+            except Exception:
+                continue
 
     async def get_details(self, lead: BusinessLead) -> BusinessLead:
         """Get detailed information from a business detail page."""
         if not lead.detail_url:
             return lead
 
-        await self.wait_and_record()
-
-        def _do_get_details(context):
-            return self._get_details_sync(context, lead)
+        def _do_get_details(driver):
+            return self._get_details_sync(driver, lead)
         
-        loop = asyncio.get_running_loop()
-        executor = get_playwright_executor()
-        
-        return await loop.run_in_executor(
-            executor,
-            lambda: _do_get_details(self._context)
-        )
+        return await self.run_in_browser(_do_get_details)
 
-    def _get_details_sync(self, context, lead: BusinessLead) -> BusinessLead:
+    def _get_details_sync(self, driver, lead: BusinessLead) -> BusinessLead:
         """Synchronous get_details implementation."""
-        page = context.new_page()
-
+        self.wait_and_record_sync()
+        
+        if not safe_get(driver, lead.detail_url, wait_time=2.0):
+            return lead
+        
+        time.sleep(random.uniform(1.5, 2.5))
+        
         try:
-            page.goto(lead.detail_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_selector("h1", timeout=10000)
-            time.sleep(random.uniform(1.0, 2.0))
-
             # Extract phone
-            phone_button = page.query_selector(
-                'button[aria-label*="phone"], button[aria-label*="Phone"]'
-            )
-            if phone_button:
-                phone_text = phone_button.inner_text()
-                lead.phone = self.clean_phone(phone_text)
-
-            # Extract website
-            website_link = page.query_selector(
-                'a[aria-label*="Website"], a[aria-label*="Site"]'
-            )
-            if website_link:
-                lead.website = website_link.get_attribute("href")
-
-            # Extract full address
-            address_button = page.query_selector(
-                'button[aria-label*="Address"], button[aria-label*="Adresse"]'
-            )
-            if address_button:
-                lead.address = address_button.inner_text()
-
-            # Check claimed status
-            claim_button = page.query_selector(
-                'button:has-text("Claim this business")'
-            )
-            lead.is_claimed = claim_button is None
-
-            logger.debug(f"Got details for: {lead.name}")
-
-        except Exception as e:
-            logger.warning(f"Failed to get details for {lead.name}: {e}")
-        finally:
-            page.close()
-
-        return lead
-
-    def _handle_cookie_consent_sync(self, page: Page) -> None:
-        """Handle Google cookie consent dialog if present."""
-        try:
-            consent_selectors = [
-                'button:has-text("Accept all")',
-                'button:has-text("Tout accepter")',
-                'button:has-text("Akzeptieren")',
-                'button:has-text("Aceptar todo")',
-                'button[aria-label*="Accept"]',
-                "button.VfPpkd-LgbsSe-OWXEXe-k8QpJ",
+            phone_selectors = [
+                'button[data-tooltip*="phone"]',
+                'button[aria-label*="Phone"]',
+                'a[href^="tel:"]',
             ]
-
-            for selector in consent_selectors:
+            for sel in phone_selectors:
                 try:
-                    consent_btn = page.query_selector(selector)
-                    if consent_btn:
-                        consent_btn.click()
-                        logger.debug("Clicked cookie consent button")
-                        time.sleep(2)
-                        return
-                except Exception:
+                    phone_el = driver.find_element(By.CSS_SELECTOR, sel)
+                    phone_text = phone_el.text or phone_el.get_attribute('aria-label') or ''
+                    phone = self._extract_phone(phone_text)
+                    if phone:
+                        lead.phone = self.clean_phone(phone)
+                        break
+                except NoSuchElementException:
                     continue
-
+            
+            # Extract website
+            website_selectors = [
+                'a[data-tooltip*="website"]',
+                'a[aria-label*="Website"]',
+                'a[href*="url?q="]',
+            ]
+            for sel in website_selectors:
+                try:
+                    website_el = driver.find_element(By.CSS_SELECTOR, sel)
+                    href = website_el.get_attribute('href')
+                    if href and 'google.com' not in href:
+                        # Extract actual URL from Google redirect
+                        if 'url?q=' in href:
+                            import urllib.parse
+                            parsed = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                            if 'q' in parsed:
+                                lead.website = parsed['q'][0]
+                        else:
+                            lead.website = href
+                        break
+                except NoSuchElementException:
+                    continue
+            
+            # Extract full address
+            address_selectors = [
+                'button[data-tooltip*="address"]',
+                'button[aria-label*="Address"]',
+            ]
+            for sel in address_selectors:
+                try:
+                    addr_el = driver.find_element(By.CSS_SELECTOR, sel)
+                    lead.address = addr_el.text.strip()
+                    break
+                except NoSuchElementException:
+                    continue
+            
+            # Check if business is claimed
+            try:
+                claim_el = driver.find_element(By.XPATH, '//*[contains(text(), "Claim this business")]')
+                lead.is_claimed = False
+            except NoSuchElementException:
+                lead.is_claimed = True
+            
+            logger.debug(f"Got details for: {lead.name}")
+            
         except Exception as e:
-            logger.debug(f"Cookie consent handling: {e}")
+            logger.warning(f"Error getting details for {lead.name}: {e}")
+        
+        return lead

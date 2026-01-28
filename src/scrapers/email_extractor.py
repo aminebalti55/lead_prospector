@@ -1,19 +1,13 @@
 """
-Email Extractor Module
-Extracts email addresses from multiple sources with validation and fallbacks.
+Email Extractor Module using undetected-chromedriver.
+
+Extracts email addresses from business websites with anti-bot evasion.
+Uses Selenium with undetected-chromedriver for reliable extraction.
 
 Sources (in priority order):
-1. Scraper detail pages (Google Maps, Yelp, YellowPages, BBB, Manta)
+1. Scraper detail pages (existing emails from scrapers)
 2. Business website (contact page, about page, footer)
-3. Google search fallback
-4. Domain-based email guessing (last resort)
-
-ENHANCED VERSION with:
-- Playwright + Stealth for JavaScript rendering and bot evasion
-- User-Agent rotation with realistic browser signatures
-- Retry logic with exponential backoff
-- Fallback chain: httpx -> playwright stealth
-- Uses sync Playwright API in thread pool for Windows compatibility
+3. Domain-based email guessing (last resort)
 """
 
 import asyncio
@@ -28,59 +22,14 @@ from urllib.parse import urlparse, urljoin
 import httpx
 from bs4 import BeautifulSoup
 
-from .windows_compat import get_playwright_executor
-
-# Playwright imports (optional - graceful fallback if not installed)
-try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-    from playwright_stealth import Stealth
-
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
-    sync_playwright = None
-    PlaywrightTimeout = Exception
+from .browser_manager import (
+    BrowserSession,
+    get_browser_executor,
+    safe_get,
+    USER_AGENTS,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# Realistic User-Agent rotation pool (2024/2025 browsers)
-USER_AGENTS = [
-    # Chrome on Windows
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    # Chrome on Mac
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    # Firefox on Windows
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    # Firefox on Mac
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:126.0) Gecko/20100101 Firefox/126.0",
-    # Edge on Windows
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
-    # Safari on Mac
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-]
-
-
-# Realistic browser headers
-def get_random_headers() -> dict:
-    """Get randomized headers that mimic a real browser."""
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Cache-Control": "max-age=0",
-    }
 
 
 # Email regex pattern
@@ -91,87 +40,69 @@ EMAIL_PATTERN = re.compile(
 # Domains to skip (not real business emails)
 SKIP_DOMAINS = {
     # Placeholder/example domains
-    "example.com",
-    "example.org",
-    "example.net",
-    "email.com",
-    "domain.com",
-    "yoursite.com",
-    "yourdomain.com",
-    "yourcompany.com",
-    "company.com",
-    "placeholder.com",
-    "test.com",
-    "sample.com",
+    "example.com", "example.org", "example.net",
+    "email.com", "domain.com", "yoursite.com",
+    "yourdomain.com", "yourcompany.com", "company.com",
+    "placeholder.com", "test.com", "sample.com",
     # Website builder/platform domains
-    "wixpress.com",
-    "wix.com",
-    "squarespace.com",
-    "weebly.com",
-    "godaddy.com",
-    "wordpress.com",
-    "wordpress.org",
-    "shopify.com",
-    "webflow.io",
+    "wixpress.com", "wix.com", "squarespace.com",
+    "weebly.com", "godaddy.com", "wordpress.com",
+    "wordpress.org", "shopify.com", "webflow.io",
     # Tech/tracking domains
-    "sentry.io",
-    "sentry-next.wixpress.com",
-    "w3.org",
-    "schema.org",
-    "google.com",
-    "facebook.com",
-    "twitter.com",
-    "instagram.com",
-    "linkedin.com",
-    "youtube.com",
-    "pinterest.com",
+    "sentry.io", "w3.org", "schema.org",
+    "google.com", "facebook.com", "twitter.com",
+    "instagram.com", "linkedin.com", "youtube.com", "pinterest.com",
     # Image/asset domains
-    "gravatar.com",
-    "githubusercontent.com",
-    "cloudinary.com",
-    "imgix.net",
+    "gravatar.com", "githubusercontent.com",
+    "cloudinary.com", "imgix.net",
     # Protection/privacy domains
-    "privacyguard.com",
-    "domainsbyproxy.com",
-    "whoisguard.com",
-    "contactprivacy.com",
+    "privacyguard.com", "domainsbyproxy.com",
+    "whoisguard.com", "contactprivacy.com",
 }
 
-# Common contact page paths to check
+# Common contact page paths to check (ordered by likelihood)
 CONTACT_PAGES = [
     "/contact",
     "/contact-us",
     "/contactus",
+    "/contact.html",
+    "/contact.php",
     "/about/contact",
     "/about",
     "/about-us",
     "/aboutus",
+    "/about.html",
     "/get-in-touch",
     "/reach-us",
     "/connect",
     "/support",
     "/help",
+    "/info",
+    "/location",
+    "/locations",
+    "/our-team",
+    "/team",
+    "/staff",
 ]
 
 # Common email prefixes for guessing
 COMMON_EMAIL_PREFIXES = [
-    "info",
-    "contact",
-    "hello",
-    "support",
-    "sales",
-    "service",
-    "office",
-    "admin",
-    "help",
-    "inquiries",
+    "info", "contact", "hello", "support",
+    "sales", "service", "office", "admin",
+    "help", "inquiries",
 ]
 
-# Rate limits for email extraction
-EMAIL_RATE_LIMITS = {
-    "website": {"min_delay": 1.5, "max_delay": 3.0, "hourly_cap": 200},
-    "google_search": {"min_delay": 5, "max_delay": 10, "hourly_cap": 50},
-}
+
+def get_random_headers() -> dict:
+    """Get randomized headers that mimic a real browser."""
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
 
 
 @dataclass
@@ -179,7 +110,7 @@ class EmailResult:
     """Result of email extraction for a single business."""
 
     email: Optional[str] = None
-    source: Optional[str] = None  # scraper, website, google_search, guessed
+    source: Optional[str] = None  # scraper, website, guessed
     confidence: str = "none"  # high, medium, low, none
     all_emails_found: List[str] = field(default_factory=list)
     extraction_notes: str = ""
@@ -196,54 +127,44 @@ class EmailResult:
 
 class EmailExtractor:
     """
-    Extracts and validates email addresses from multiple sources.
+    Extracts and validates email addresses from business websites.
 
-    ENHANCED with:
-    - User-Agent rotation
-    - Playwright + Stealth fallback for bot-protected sites
-    - Retry logic with exponential backoff
-    - Better error handling for 403s and timeouts
-    - Uses sync Playwright API in thread pool for Windows compatibility
-
+    Uses a multi-strategy approach:
+    1. Try HTTP request first (fast)
+    2. Fall back to browser for JavaScript-heavy sites
+    
     Usage:
         async with EmailExtractor() as extractor:
             result = await extractor.extract_email(
                 website_url="https://example-plumber.com",
                 business_name="Example Plumbing",
-                city="Miami",
-                state="FL"
             )
     """
 
-    def __init__(
-        self, timeout: float = 15.0, max_retries: int = 3, use_playwright: bool = True
-    ):
+    def __init__(self, timeout: float = 8.0, max_retries: int = 1, use_browser: bool = True):
         self.timeout = timeout
         self.max_retries = max_retries
-        self.use_playwright = use_playwright and PLAYWRIGHT_AVAILABLE
+        self.use_browser = use_browser
         self.client: Optional[httpx.AsyncClient] = None
+        self._session: Optional[BrowserSession] = None
         self._seen_emails: Set[str] = set()
 
-        if self.use_playwright:
-            logger.info("Playwright stealth enabled for bot evasion")
-        else:
-            if not PLAYWRIGHT_AVAILABLE:
-                logger.warning(
-                    "Playwright not installed. Run: pip install playwright playwright-stealth && playwright install chromium"
-                )
-
     async def __aenter__(self):
-        # Create httpx client with rotating user-agent
         self.client = httpx.AsyncClient(
             timeout=self.timeout,
             headers=get_random_headers(),
             follow_redirects=True,
         )
+        if self.use_browser:
+            self._session = BrowserSession(headless=True)
+            await self._session.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.client:
             await self.client.aclose()
+        if self._session:
+            await self._session.__aexit__(exc_type, exc_val, exc_tb)
 
     async def extract_email(
         self,
@@ -260,16 +181,6 @@ class EmailExtractor:
         1. Use existing emails if provided (from scrapers)
         2. Scrape business website
         3. Guess from domain (last resort)
-
-        Args:
-            website_url: Business website URL
-            business_name: Name of the business
-            city: City location
-            state: State location
-            existing_emails: Emails already found by scrapers
-
-        Returns:
-            EmailResult with best email and metadata
         """
         result = EmailResult()
         all_found: List[Tuple[str, str, str]] = []  # (email, source, confidence)
@@ -282,9 +193,7 @@ class EmailExtractor:
                 result.source = "scraper"
                 result.confidence = "high"
                 result.all_emails_found = valid_emails
-                result.extraction_notes = (
-                    f"Found {len(valid_emails)} email(s) from scraper"
-                )
+                result.extraction_notes = f"Found {len(valid_emails)} email(s) from scraper"
                 return result
 
         # 2. Extract from website
@@ -301,7 +210,6 @@ class EmailExtractor:
 
         # Select best email
         if all_found:
-            # Sort by confidence (high > medium > low)
             confidence_order = {"high": 0, "medium": 1, "low": 2}
             all_found.sort(key=lambda x: confidence_order.get(x[2], 3))
 
@@ -310,9 +218,7 @@ class EmailExtractor:
             result.source = best_source
             result.confidence = best_confidence
             result.all_emails_found = list(set(e[0] for e in all_found))
-            result.extraction_notes = (
-                f"Found {len(all_found)} email(s), best from {best_source}"
-            )
+            result.extraction_notes = f"Found {len(all_found)} email(s), best from {best_source}"
         else:
             result.extraction_notes = "No email found from any source"
 
@@ -322,13 +228,7 @@ class EmailExtractor:
         """
         Extract emails from a business website.
 
-        Checks:
-        1. Homepage
-        2. Contact page
-        3. About page
-
-        Returns:
-            List of valid email addresses found
+        Checks homepage and key contact pages concurrently for speed.
         """
         if not self.client:
             raise RuntimeError("Client not initialized. Use async context manager.")
@@ -343,164 +243,100 @@ class EmailExtractor:
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-        # Pages to check
+        # Priority pages - only check the most common ones for speed
+        priority_paths = ["/contact", "/contact-us", "/about", "/about-us"]
         pages_to_check = [url]  # Homepage first
-        for contact_path in CONTACT_PAGES[:5]:  # Limit to 5 contact pages
-            pages_to_check.append(urljoin(base_url, contact_path))
+        for contact_path in priority_paths:
+            contact_url = urljoin(base_url, contact_path)
+            if contact_url not in pages_to_check:
+                pages_to_check.append(contact_url)
 
-        # Remove duplicates while preserving order
-        pages_to_check = list(dict.fromkeys(pages_to_check))
-
-        for page_url in pages_to_check:
+        # Check homepage + up to 4 contact pages concurrently (max 5 pages)
+        pages_to_check = pages_to_check[:5]
+        
+        # Concurrent extraction for speed
+        tasks = [self._extract_emails_from_page(page_url) for page_url in pages_to_check]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.debug(f"Failed to extract from {pages_to_check[i]}: {result}")
+            elif result:
+                found_emails.update(result)
+                if result:
+                    logger.info(f"Found emails on {pages_to_check[i]}: {result}")
+        
+        # If still no emails and we have browser, try one more time with browser on contact page
+        if not found_emails and self.use_browser and self._session:
+            contact_url = urljoin(base_url, "/contact")
             try:
-                emails = await self._extract_emails_from_page(page_url)
-                found_emails.update(emails)
-
-                # If we found emails, we can stop
-                if found_emails:
-                    break
-
-                # Rate limiting between pages
-                await asyncio.sleep(0.5)
-
+                html = await self._fetch_with_browser(contact_url)
+                if html:
+                    browser_emails = self._parse_emails_from_html(html)
+                    found_emails.update(browser_emails)
             except Exception as e:
-                logger.debug(f"Failed to extract from {page_url}: {e}")
-                continue
-
+                logger.debug(f"Browser fallback failed for {contact_url}: {e}")
+        
         return list(found_emails)
 
     async def _extract_emails_from_page(self, url: str) -> Set[str]:
-        """Extract emails from a single page using fallback chain."""
+        """Extract emails from a single page using HTTP only (fast)."""
         emails: Set[str] = set()
 
-        # Strategy 1: Try httpx with rotating headers
+        # HTTP request only for speed - browser fallback handled at website level
         html = await self._fetch_with_httpx(url)
+        
+        if html:
+            emails = self._parse_emails_from_html(html)
 
-        # Strategy 2: If httpx fails (403, timeout, etc.), try Playwright stealth
-        if html is None and self.use_playwright:
-            logger.debug(f"httpx failed for {url}, trying Playwright stealth...")
-            html = await self._fetch_with_playwright(url)
-
-        if html is None:
-            return emails
-
-        # Parse the HTML and extract emails
-        emails = self._parse_emails_from_html(html)
         return emails
 
     async def _fetch_with_httpx(self, url: str) -> Optional[str]:
-        """Fetch page with httpx and retry logic."""
+        """Fetch page with HTTP request."""
         for attempt in range(self.max_retries):
             try:
                 if not self.client:
-                    raise RuntimeError("Client not initialized")
+                    return None
 
-                # Rotate headers on each attempt
                 self.client.headers.update(get_random_headers())
-
                 response = await self.client.get(url)
 
                 if response.status_code == 200:
                     return response.text
                 elif response.status_code == 403:
-                    logger.debug(f"403 Forbidden for {url} (attempt {attempt + 1})")
-                    # Don't retry 403s with httpx - go straight to Playwright
+                    # Blocked - try browser instead
                     return None
                 elif response.status_code >= 500:
-                    # Server error - retry with backoff
-                    delay = (2**attempt) + random.uniform(0, 1)
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(1)
                     continue
                 else:
-                    logger.debug(f"Status {response.status_code} for {url}")
                     return None
 
             except httpx.TimeoutException:
-                logger.debug(f"Timeout for {url} (attempt {attempt + 1})")
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(1)
-            except httpx.ConnectError as e:
-                logger.debug(f"Connection error for {url}: {e}")
-                return None
             except Exception as e:
-                logger.debug(f"Error fetching {url}: {e}")
+                logger.debug(f"HTTP error for {url}: {e}")
                 return None
 
         return None
 
-    async def _fetch_with_playwright(self, url: str) -> Optional[str]:
-        """
-        Fetch page with Playwright + Stealth for bot-protected sites.
-        
-        Uses sync API in thread pool for Windows compatibility.
-        """
-        if not PLAYWRIGHT_AVAILABLE:
+    async def _fetch_with_browser(self, url: str) -> Optional[str]:
+        """Fetch page with browser (for JS-heavy sites)."""
+        if not self._session:
             return None
 
-        def _fetch_sync():
-            """Synchronous Playwright fetch that runs in thread pool."""
-            import sys
-            import asyncio as aio
-            
-            try:
-                # CRITICAL: Set ProactorEventLoop policy in this thread
-                # sync_playwright creates an internal event loop that needs subprocess support
-                if sys.platform == "win32":
-                    aio.set_event_loop_policy(aio.WindowsProactorEventLoopPolicy())
-                
-                with sync_playwright() as pw:
-                    browser = pw.chromium.launch(
-                        headless=True,
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--disable-dev-shm-usage",
-                            "--no-sandbox",
-                        ],
-                    )
-                    try:
-                        context = browser.new_context(
-                            viewport={"width": 1920, "height": 1080},
-                            user_agent=random.choice(USER_AGENTS),
-                            locale="en-US",
-                        )
-                        
-                        page = context.new_page()
-                        
-                        # Add stealth script
-                        page.add_init_script("""
-                            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                        """)
-                        
-                        # Navigate with timeout
-                        page.goto(
-                            url, 
-                            timeout=int(self.timeout * 1000), 
-                            wait_until="domcontentloaded"
-                        )
-                        
-                        # Wait a bit for any JS to render
-                        time.sleep(1)
-                        
-                        # Get page content
-                        content = page.content()
-                        
-                        context.close()
-                        logger.debug(f"Playwright successfully fetched {url}")
-                        return content
-                        
-                    finally:
-                        browser.close()
-                        
-            except Exception as e:
-                logger.debug(f"Playwright error for {url}: {e}")
+        def _fetch(driver):
+            if not safe_get(driver, url, wait_time=2.0):
                 return None
+            time.sleep(1)
+            return driver.page_source
 
-        # Run sync Playwright in thread pool
-        loop = asyncio.get_running_loop()
-        executor = get_playwright_executor()
-        
-        return await loop.run_in_executor(executor, _fetch_sync)
+        try:
+            return await self._session.run(_fetch)
+        except Exception as e:
+            logger.debug(f"Browser error for {url}: {e}")
+            return None
 
     def _parse_emails_from_html(self, html: str) -> Set[str]:
         """Parse emails from HTML content."""
@@ -509,34 +345,54 @@ class EmailExtractor:
         try:
             soup = BeautifulSoup(html, "html.parser")
 
-            # Method 1: Find mailto: links
+            # Method 1: Find mailto: links (most reliable)
             mailto_links = soup.find_all("a", href=re.compile(r"^mailto:", re.I))
             for link in mailto_links:
                 href_val = link.get("href")
                 href = str(href_val) if href_val else ""
-                email = href.replace("mailto:", "").split("?")[0].strip()
+                # Extract email, handling mailto:email?subject=... format
+                email = href.replace("mailto:", "").split("?")[0].split("&")[0].strip()
                 if self.validate_email(email):
                     emails.add(email.lower())
+                    logger.debug(f"Found mailto email: {email}")
 
-            # Method 2: Regex search in text content
-            text = soup.get_text()
+            # Method 2: Find emails in HTML attributes (href, data-*, etc.)
+            attr_emails = self._find_emails_in_html_attrs(html)
+            emails.update(attr_emails)
+
+            # Method 3: Regex search in visible text
+            text = soup.get_text(separator=" ")
             regex_emails = EMAIL_PATTERN.findall(text)
             for email in regex_emails:
                 if self.validate_email(email):
                     emails.add(email.lower())
 
-            # Method 3: Check for obfuscated emails
-            # Look for patterns like: info [at] domain [dot] com
+            # Method 4: Check for obfuscated emails in text
             obfuscated = self._find_obfuscated_emails(text)
             for email in obfuscated:
                 if self.validate_email(email):
                     emails.add(email.lower())
 
-            # Method 4: Check raw HTML for emails (sometimes hidden in attributes)
+            # Method 5: Check raw HTML for emails (catches JS-embedded emails)
             raw_emails = EMAIL_PATTERN.findall(html)
             for email in raw_emails:
                 if self.validate_email(email):
                     emails.add(email.lower())
+            
+            # Method 6: Look for email-like patterns near "email" or "contact" keywords
+            email_sections = soup.find_all(
+                string=re.compile(r"email|e-mail|contact|reach", re.I)
+            )
+            for section in email_sections:
+                parent = section.parent
+                if parent:
+                    # Get text from parent and siblings
+                    parent_text = parent.get_text() if parent else ""
+                    found = EMAIL_PATTERN.findall(parent_text)
+                    for email in found:
+                        if self.validate_email(email):
+                            emails.add(email.lower())
+                            logger.debug(f"Found email near keyword: {email}")
 
         except Exception as e:
             logger.debug(f"Error parsing HTML: {e}")
@@ -544,65 +400,86 @@ class EmailExtractor:
         return emails
 
     def _find_obfuscated_emails(self, text: str) -> List[str]:
-        """Find obfuscated email patterns like 'info [at] domain [dot] com'."""
+        """Find obfuscated email patterns."""
         emails = []
-
-        # Pattern: word [at] or (at) or {at} domain [dot] or (dot) or {dot} tld
-        patterns = [
-            r"(\w+[\w.+-]*)\s*[\[\(\{]at[\]\)\}]\s*(\w+[\w.-]*)\s*[\[\(\{]dot[\]\)\}]\s*(\w+)",
-            r"(\w+[\w.+-]*)\s*@\s*(\w+[\w.-]*)\s*[\[\(\{]dot[\]\)\}]\s*(\w+)",
+        
+        # Pattern 1: name [at] domain [dot] com
+        patterns_3part = [
+            r"(\w+[\w.+-]*)\s*[\[\(\{<]?\s*at\s*[\]\)\}>]?\s*(\w+[\w.-]*)\s*[\[\(\{<]?\s*dot\s*[\]\)\}>]?\s*(\w+)",
+            r"(\w+[\w.+-]*)\s*@\s*(\w+[\w.-]*)\s*[\[\(\{<]?\s*dot\s*[\]\)\}>]?\s*(\w+)",
+        ]
+        
+        # Pattern 2: [email protected] or \[email protected\] (escaped brackets)
+        # This catches WordPress/website builder obfuscation
+        patterns_direct = [
+            r"\\?\[email[^\]]*\\?\]",  # [email protected] or \[email protected\]
+            r"\[email\s*protected\]",  # [email protected]
         ]
 
         text_lower = text.lower()
-        for pattern in patterns:
+        
+        # Try 3-part patterns
+        for pattern in patterns_3part:
             matches = re.findall(pattern, text_lower, re.IGNORECASE)
             for match in matches:
                 if len(match) == 3:
                     email = f"{match[0]}@{match[1]}.{match[2]}"
                     emails.append(email)
-
+        
+        # For [email protected] patterns, we need to look at the raw HTML
+        # These are often mailto: links with obfuscated display text
+        # The actual email is usually in the href
+        
+        return emails
+    
+    def _find_emails_in_html_attrs(self, html: str) -> Set[str]:
+        """Find emails hidden in HTML attributes (href, data-*, onclick, etc.)."""
+        emails: Set[str] = set()
+        
+        # Look for mailto: in any attribute
+        mailto_pattern = r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+        matches = re.findall(mailto_pattern, html, re.IGNORECASE)
+        for email in matches:
+            if self.validate_email(email):
+                emails.add(email.lower())
+        
+        # Look for emails in data attributes
+        data_pattern = r'data-[^=]*=["\']([^"\']*@[^"\']*)["\']'
+        matches = re.findall(data_pattern, html, re.IGNORECASE)
+        for match in matches:
+            found = EMAIL_PATTERN.findall(match)
+            for email in found:
+                if self.validate_email(email):
+                    emails.add(email.lower())
+        
+        # Look for emails in onclick/javascript
+        js_pattern = r'["\']([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})["\']'
+        matches = re.findall(js_pattern, html)
+        for email in matches:
+            if self.validate_email(email):
+                emails.add(email.lower())
+        
         return emails
 
     def validate_email(self, email: str) -> bool:
-        """
-        Validate an email address.
-
-        Checks:
-        1. Valid format
-        2. Not a skip domain
-        3. Not a generic/fake pattern
-        4. Not a file path (image, JS, etc.)
-        """
+        """Validate an email address."""
         if not email:
             return False
 
         email = email.lower().strip()
 
-        # Check format
         if not EMAIL_PATTERN.match(email):
             return False
 
-        # Skip file extensions (false positives from image/asset filenames)
+        # Skip file extensions
         file_extensions = [
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".svg",
-            ".webp",
-            ".ico",
-            ".js",
-            ".css",
-            ".html",
-            ".pdf",
-            ".doc",
-            ".docx",
-            ".xml",
+            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+            ".js", ".css", ".html", ".pdf", ".doc", ".docx", ".xml",
         ]
         if any(email.endswith(ext) for ext in file_extensions):
             return False
 
-        # Skip if it looks like a file path (contains @ followed by size indicators)
+        # Skip file paths
         if re.search(r"@\d+x\.", email):
             return False
 
@@ -612,11 +489,9 @@ class EmailExtractor:
         except IndexError:
             return False
 
-        # Domain must have at least one dot and valid TLD
         if "." not in domain:
             return False
 
-        # TLD must be at least 2 chars and only letters
         tld = domain.split(".")[-1]
         if len(tld) < 2 or not tld.isalpha():
             return False
@@ -627,36 +502,18 @@ class EmailExtractor:
                 return False
 
         # Check for fake patterns
-        fake_patterns = [
-            "your",
-            "email",
-            "name",
-            "user",
-            "test",
-            "demo",
-            "sample",
-            "fake",
-            "example",
-        ]
+        fake_patterns = ["your", "email", "name", "user", "test", "demo", "sample", "fake", "example"]
         local_part = email.split("@")[0]
         if any(pattern in local_part for pattern in fake_patterns):
-            # Only skip if it looks truly fake
-            if local_part in fake_patterns or local_part.startswith(
-                tuple(fake_patterns)
-            ):
+            if local_part in fake_patterns or local_part.startswith(tuple(fake_patterns)):
                 return False
 
         return True
 
     def guess_email_from_domain(self, website_url: str) -> List[str]:
-        """
-        Guess likely email addresses from a domain.
-
-        Returns list of guessed emails (low confidence).
-        """
+        """Guess likely email addresses from a domain."""
         guessed = []
 
-        # Parse domain
         if not website_url.startswith(("http://", "https://")):
             website_url = f"https://{website_url}"
 
@@ -664,21 +521,17 @@ class EmailExtractor:
             parsed = urlparse(website_url)
             domain = parsed.netloc
 
-            # Remove www prefix
             if domain.startswith("www."):
                 domain = domain[4:]
 
-            # Skip invalid domains
             if not domain or "." not in domain:
                 return guessed
 
-            # Skip known platform domains
             for skip in SKIP_DOMAINS:
                 if skip in domain:
                     return guessed
 
-            # Generate guesses
-            for prefix in COMMON_EMAIL_PREFIXES[:3]:  # Top 3 prefixes only
+            for prefix in COMMON_EMAIL_PREFIXES[:3]:
                 guessed.append(f"{prefix}@{domain}")
 
         except Exception as e:
@@ -686,45 +539,17 @@ class EmailExtractor:
 
         return guessed
 
-    @staticmethod
-    def extract_email_from_mailto(href: str) -> Optional[str]:
-        """Extract email from a mailto: href."""
-        if not href:
-            return None
-
-        if href.lower().startswith("mailto:"):
-            email = href[7:].split("?")[0].strip()
-            return email if email else None
-
-        return None
-
-    @staticmethod
-    def clean_email(email: str) -> str:
-        """Clean and normalize an email address."""
-        if not email:
-            return ""
-
-        # Remove whitespace and lowercase
-        email = email.strip().lower()
-
-        # Remove common prefixes accidentally included
-        for prefix in ["email:", "e-mail:", "mail:"]:
-            if email.startswith(prefix):
-                email = email[len(prefix) :].strip()
-
-        return email
-
 
 async def extract_emails_for_leads(
     leads: list,
     extractor: Optional[EmailExtractor] = None,
-    max_concurrent: int = 5,
+    max_concurrent: int = 3,
 ) -> list:
     """
     Extract emails for a list of leads.
 
     Args:
-        leads: List of BusinessLead or ProcessedLead objects
+        leads: List of BusinessLead objects
         extractor: EmailExtractor instance (will create one if not provided)
         max_concurrent: Max concurrent extractions
 
@@ -735,13 +560,11 @@ async def extract_emails_for_leads(
     async def extract_for_lead(lead, extractor):
         """Extract email for a single lead."""
         try:
-            # Get existing emails if any
             existing = []
             if hasattr(lead, "extra_data") and lead.extra_data:
                 if "email" in lead.extra_data:
                     existing.append(lead.extra_data["email"])
 
-            # Extract
             result = await extractor.extract_email(
                 website_url=getattr(lead, "website", None),
                 business_name=getattr(lead, "name", None),
@@ -750,7 +573,6 @@ async def extract_emails_for_leads(
                 existing_emails=existing,
             )
 
-            # Update lead
             if result.email:
                 if hasattr(lead, "email"):
                     lead.email = result.email
@@ -764,19 +586,15 @@ async def extract_emails_for_leads(
             return lead
 
         except Exception as e:
-            logger.warning(
-                f"Failed to extract email for {getattr(lead, 'name', 'unknown')}: {e}"
-            )
+            logger.warning(f"Failed to extract email for {getattr(lead, 'name', 'unknown')}: {e}")
             return lead
 
-    # Create semaphore for concurrency control
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def bounded_extract(lead, extractor):
         async with semaphore:
             return await extract_for_lead(lead, extractor)
 
-    # Process leads
     own_extractor = extractor is None
     if own_extractor:
         extractor = EmailExtractor()
@@ -786,7 +604,6 @@ async def extract_emails_for_leads(
             tasks = [bounded_extract(lead, extractor) for lead in leads]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Filter out exceptions
             processed_leads = []
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
@@ -800,25 +617,3 @@ async def extract_emails_for_leads(
     except Exception as e:
         logger.error(f"Error in batch email extraction: {e}")
         return leads
-
-
-# Convenience function for testing
-async def test_email_extractor():
-    """Test the email extractor."""
-    async with EmailExtractor() as extractor:
-        # Test with a sample website
-        result = await extractor.extract_email(
-            website_url="https://www.example.com",
-            business_name="Example Business",
-            city="Miami",
-            state="FL",
-        )
-        print(f"Email: {result.email}")
-        print(f"Source: {result.source}")
-        print(f"Confidence: {result.confidence}")
-        print(f"All found: {result.all_emails_found}")
-        print(f"Notes: {result.extraction_notes}")
-
-
-if __name__ == "__main__":
-    asyncio.run(test_email_extractor())

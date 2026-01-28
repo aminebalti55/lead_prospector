@@ -5,25 +5,34 @@ This module provides the foundation for all scraper implementations:
 - BusinessLead: Dataclass for standardized lead data
 - RateLimiter: Per-source rate limiting with hourly caps
 - BaseScraper: Abstract base class for all scrapers
-- Browser utilities: Playwright setup with anti-detection
 
-On Windows, Playwright runs via sync API in a thread pool to avoid
-asyncio event loop conflicts with uvicorn/FastAPI.
+All scrapers use undetected-chromedriver for browser automation,
+which provides excellent anti-detection and Windows compatibility.
 """
 
 import asyncio
 import random
-import sys
 import time
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple, Callable
-from urllib.parse import quote_plus, urlencode
-from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Callable
 
-from .windows_compat import get_playwright_executor
+from selenium.webdriver.common.by import By
+
+from .browser_manager import (
+    BrowserSession,
+    get_browser_executor,
+    safe_get,
+    safe_find_element,
+    safe_find_elements,
+    scroll_page,
+    scroll_element,
+    get_text_safe,
+    get_attribute_safe,
+    USER_AGENTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,19 +100,19 @@ class RateLimiter:
     Per-source rate limiting with hourly caps.
 
     Each source has different rate limits to avoid detection:
-    - Google Maps: 5-10s between requests, 100/hour
-    - Yelp: 3-5s between requests, 150/hour
-    - YellowPages: 2-4s between requests, 200/hour
-    - BBB: 3-5s between requests, 120/hour
-    - Manta: 3-6s between requests, 100/hour
+    - Google Maps: 3-6s between requests, 150/hour
+    - Yelp: 2-4s between requests, 200/hour
+    - YellowPages: 1-3s between requests, 300/hour
+    - BBB: 2-4s between requests, 200/hour
+    - Manta: 2-5s between requests, 150/hour
     """
 
     RATE_LIMITS = {
-        "google_maps": {"min_delay": 5, "max_delay": 10, "hourly_cap": 100},
-        "yelp": {"min_delay": 3, "max_delay": 5, "hourly_cap": 150},
-        "yellowpages": {"min_delay": 2, "max_delay": 4, "hourly_cap": 200},
-        "bbb": {"min_delay": 3, "max_delay": 5, "hourly_cap": 120},
-        "manta": {"min_delay": 3, "max_delay": 6, "hourly_cap": 100},
+        "google_maps": {"min_delay": 3, "max_delay": 6, "hourly_cap": 150},
+        "yelp": {"min_delay": 2, "max_delay": 4, "hourly_cap": 200},
+        "yellowpages": {"min_delay": 1, "max_delay": 3, "hourly_cap": 300},
+        "bbb": {"min_delay": 2, "max_delay": 4, "hourly_cap": 200},
+        "manta": {"min_delay": 2, "max_delay": 5, "hourly_cap": 150},
     }
 
     def __init__(self):
@@ -137,41 +146,6 @@ class RateLimiter:
 
         return current_count < hourly_cap
 
-    async def wait_if_needed(self, source: str) -> None:
-        """Wait for appropriate delay before making a request."""
-        if source not in self.RATE_LIMITS:
-            return
-
-        limits = self.RATE_LIMITS[source]
-
-        # Check hourly cap
-        if not self.can_make_request(source):
-            wait_time = 60  # Wait 1 minute if at cap
-            logger.warning(f"Hourly cap reached for {source}, waiting {wait_time}s")
-            await asyncio.sleep(wait_time)
-            return await self.wait_if_needed(source)
-
-        # Calculate delay since last request
-        last_time = self._last_request.get(source, 0)
-        elapsed = time.time() - last_time
-        min_delay = limits["min_delay"]
-        max_delay = limits["max_delay"]
-
-        # Random delay within range
-        target_delay = random.uniform(min_delay, max_delay)
-
-        if elapsed < target_delay:
-            wait_time = target_delay - elapsed
-            logger.debug(f"Rate limiting {source}: waiting {wait_time:.2f}s")
-            await asyncio.sleep(wait_time)
-
-    def record_request(self, source: str) -> None:
-        """Record that a request was made."""
-        self._last_request[source] = time.time()
-        if source not in self._hourly_counts:
-            self._hourly_counts[source] = []
-        self._hourly_counts[source].append(datetime.now())
-    
     def wait_sync(self, source: str) -> None:
         """Synchronous wait for rate limiting (used in thread pool)."""
         if source not in self.RATE_LIMITS:
@@ -185,16 +159,18 @@ class RateLimiter:
         if elapsed < target_delay:
             time.sleep(target_delay - elapsed)
 
+    def record_request(self, source: str) -> None:
+        """Record that a request was made."""
+        self._last_request[source] = time.time()
+        if source not in self._hourly_counts:
+            self._hourly_counts[source] = []
+        self._hourly_counts[source].append(datetime.now())
 
-# User agent rotation pool
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
+    async def wait_if_needed(self, source: str) -> None:
+        """Async wait - runs sync wait in thread pool."""
+        loop = asyncio.get_running_loop()
+        executor = get_browser_executor()
+        await loop.run_in_executor(executor, lambda: self.wait_sync(source))
 
 
 class BaseScraper(ABC):
@@ -205,122 +181,53 @@ class BaseScraper(ABC):
     - search(): Find businesses matching criteria
     - get_details(): Get detailed info for a specific business
     
-    On Windows, all Playwright operations run via the sync API in a thread pool
-    to avoid asyncio event loop conflicts.
+    Uses undetected-chromedriver for all browser operations,
+    providing excellent anti-detection and Windows compatibility.
     """
 
     SOURCE_NAME: str = ""  # Override in subclass
 
-    def __init__(self, rate_limiter: Optional[RateLimiter] = None):
+    def __init__(self, rate_limiter: Optional[RateLimiter] = None, headless: bool = True):
         self.rate_limiter = rate_limiter or RateLimiter()
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._started = False
+        self.headless = headless
+        self._session: Optional[BrowserSession] = None
 
     async def __aenter__(self):
         """Async context manager entry."""
-        await self.start()
+        print(f"[SCRAPER] Starting {self.SOURCE_NAME} scraper...")
+        logger.info(f"Starting {self.SOURCE_NAME} scraper")
+        self._session = BrowserSession(headless=self.headless)
+        await self._session.__aenter__()
+        print(f"[SCRAPER] {self.SOURCE_NAME} scraper ready!")
+        logger.info(f"{self.SOURCE_NAME} scraper started")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        await self.close()
-
-    async def start(self, headless: bool = True) -> None:
-        """Initialize browser and context."""
-        if self._started:
-            return
-        
-        def _init():
-            import sys
-            import asyncio as aio
-            from playwright.sync_api import sync_playwright
-            
-            # CRITICAL: Set ProactorEventLoop policy in this thread
-            # sync_playwright creates an internal event loop that needs subprocess support
-            if sys.platform == "win32":
-                aio.set_event_loop_policy(aio.WindowsProactorEventLoopPolicy())
-            
-            pw = sync_playwright().start()
-            browser = pw.chromium.launch(
-                headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                ],
-            )
-            context = browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent=random.choice(USER_AGENTS),
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            """)
-            return pw, browser, context
-        
-        loop = asyncio.get_running_loop()
-        executor = get_playwright_executor()
-        
-        self._playwright, self._browser, self._context = await loop.run_in_executor(
-            executor, _init
-        )
-        self._started = True
-        logger.info(f"{self.SOURCE_NAME} scraper started")
-
-    async def close(self) -> None:
-        """Clean up browser resources."""
-        if not self._started:
-            return
-        
-        def _cleanup():
-            try:
-                if self._context:
-                    self._context.close()
-                if self._browser:
-                    self._browser.close()
-                if self._playwright:
-                    self._playwright.stop()
-            except Exception as e:
-                logger.debug(f"Error during cleanup: {e}")
-        
-        loop = asyncio.get_running_loop()
-        executor = get_playwright_executor()
-        
-        await loop.run_in_executor(executor, _cleanup)
-        
-        self._context = None
-        self._browser = None
-        self._playwright = None
-        self._started = False
+        print(f"[SCRAPER] Closing {self.SOURCE_NAME} scraper...")
+        if self._session:
+            await self._session.__aexit__(exc_type, exc_val, exc_tb)
+            self._session = None
+        print(f"[SCRAPER] {self.SOURCE_NAME} scraper closed")
         logger.info(f"{self.SOURCE_NAME} scraper closed")
 
     async def run_in_browser(self, func: Callable, *args, **kwargs) -> Any:
         """
-        Run a synchronous function in the browser thread pool.
+        Run a function with the browser driver.
         
-        The function receives (context, *args, **kwargs).
+        The function receives (driver, *args, **kwargs).
         """
-        if not self._started:
-            raise RuntimeError("Browser not started. Call start() first.")
-        
-        def _run():
-            return func(self._context, *args, **kwargs)
-        
-        loop = asyncio.get_running_loop()
-        executor = get_playwright_executor()
-        
-        return await loop.run_in_executor(executor, _run)
+        print(f"[RUN_IN_BROWSER] Running function {func.__name__ if hasattr(func, '__name__') else func}...")
+        if not self._session:
+            print("[RUN_IN_BROWSER] ERROR: Browser not started!")
+            raise RuntimeError("Browser not started. Use async context manager.")
+        result = await self._session.run(func, *args, **kwargs)
+        print(f"[RUN_IN_BROWSER] Function completed")
+        return result
 
-    async def wait_and_record(self) -> None:
-        """Wait for rate limit and record the request."""
-        await self.rate_limiter.wait_if_needed(self.SOURCE_NAME)
+    def wait_and_record_sync(self) -> None:
+        """Synchronous rate limiting (call from within thread pool)."""
+        self.rate_limiter.wait_sync(self.SOURCE_NAME)
         self.rate_limiter.record_request(self.SOURCE_NAME)
 
     @abstractmethod
@@ -354,10 +261,6 @@ class BaseScraper(ABC):
         """
         pass
 
-    def is_sponsored(self, element) -> bool:
-        """Check if a listing is sponsored/ad. Override in subclass."""
-        return False
-
     @staticmethod
     def clean_phone(phone: Optional[str]) -> Optional[str]:
         """Normalize phone number format."""
@@ -379,7 +282,12 @@ class BaseScraper(ABC):
         try:
             # Handle locale-specific formats (4,8 vs 4.8)
             cleaned = rating_str.replace(",", ".").strip()
-            return float(cleaned)
+            # Extract first number
+            import re
+            match = re.search(r"(\d+\.?\d*)", cleaned)
+            if match:
+                return float(match.group(1))
+            return None
         except ValueError:
             return None
 

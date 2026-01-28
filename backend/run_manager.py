@@ -144,21 +144,26 @@ class RunManager:
             return list(self._runs.values())
 
     async def _execute_run(self, state: RunState) -> None:
+        print(f"\n[RUN_MANAGER] ========== EXECUTING RUN {state.run_id} ==========", flush=True)
         tracker = self._trackers.get(state.run_id)
         
         async with self._run_semaphore:
+            print(f"[RUN_MANAGER] Acquired semaphore, starting run...", flush=True)
             # Import here to keep import-time side effects minimal
             from main import LeadProspector
 
             state.status = "running"
             state.started_at = datetime.utcnow()
+            print(f"[RUN_MANAGER] Status set to running", flush=True)
 
             try:
                 if tracker:
                     await tracker.set_phase("Initializing", "Setting up scrapers...")
                     await tracker.set_progress(5)
                 
+                print(f"[RUN_MANAGER] Creating LeadProspector instance...", flush=True)
                 prospector = LeadProspector()
+                print(f"[RUN_MANAGER] LeadProspector created", flush=True)
                 
                 # Inject progress tracker into prospector
                 prospector._progress_tracker = tracker
@@ -172,8 +177,14 @@ class RunManager:
                     skip_scrapers = state.params.skip_scrapers or []
                     active_scrapers = [s for s in scrapers if s not in skip_scrapers]
                     
+                    print(f"[RUN_MANAGER] Active scrapers: {active_scrapers}", flush=True)
                     for scraper in active_scrapers:
                         await tracker.add_step(f"Scrape {scraper}", "pending")
+                
+                print(f"[RUN_MANAGER] Calling prospector.run()...", flush=True)
+                print(f"[RUN_MANAGER] Locations: {state.params.locations}", flush=True)
+                print(f"[RUN_MANAGER] Niches: {state.params.niches}", flush=True)
+                print(f"[RUN_MANAGER] Max results: {state.params.max_results}", flush=True)
                 
                 await prospector.run(
                     locations=state.params.locations,

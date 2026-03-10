@@ -185,3 +185,27 @@ class BatchEmailResponse(BaseModel):
     sent: int
     failed: int
     results: List[BatchEmailResult]
+
+
+# ── Direct Leads Models ──────────────────────────────────────────────
+
+class DirectScanCreateRequest(BaseModel):
+    keywords: List[str] = Field(min_length=1, description="Search keywords")
+    sources: Optional[List[str]] = Field(default=None, description="Sources to search (None = all)")
+    max_results: int = Field(default=20, ge=1, le=200, description="Max results to return")
+
+
+class DirectScanStatusResponse(BaseModel):
+    scan_id: str
+    status: Literal["queued", "running", "completed", "failed"]
+    created_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    total_leads: int = 0
+    error: Optional[str] = None
+
+
+class SavedSearchRequest(BaseModel):
+    keywords: List[str] = Field(min_length=1, description="Search keywords")
+    sources: Optional[List[str]] = Field(default=None, description="Sources to search")
+    frequency: str = Field(default="daily", description="Run frequency: 'daily', 'weekly', '6hours', etc.")
+    max_results: int = Field(default=20, ge=1, le=200)

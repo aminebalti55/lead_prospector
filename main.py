@@ -117,6 +117,16 @@ class LeadProspector:
         """
         niches = niches or list(settings.search.niches.keys())
 
+        # Load existing businesses from previous Excel files for duplicate prevention
+        from backend.excel_store import get_existing_businesses
+        existing_businesses = get_existing_businesses()
+        if existing_businesses:
+            console.print(f"[dim]Loaded {len(existing_businesses)} existing businesses for duplicate prevention[/dim]")
+        
+        # Pre-populate seen_businesses with existing data
+        for biz_key in existing_businesses:
+            self.seen_businesses[biz_key] = None  # Mark as seen but don't store full data
+
         mode_text = (
             "[bold magenta]SCRAPING MODE[/bold magenta] (Free)"
             if use_scrapers
@@ -130,7 +140,8 @@ class LeadProspector:
                 f"Niches: {', '.join(niches)}\n"
                 f"Website Audit: {'Enabled' if not skip_audit else 'Disabled'}\n"
                 f"Review Analysis: {'Enabled' if not skip_reviews else 'Disabled'}\n"
-                f"Email Extraction: {'Enabled' if fetch_emails else 'Disabled'}",
+                f"Email Extraction: {'Enabled' if fetch_emails else 'Disabled'}\n"
+                f"Duplicate Check: {len(existing_businesses)} existing leads",
                 title="Configuration",
             )
         )
@@ -233,7 +244,8 @@ class LeadProspector:
                     progress.advance(main_task)
 
         # Final deduplication across all locations
-        unique_leads = list(self.seen_businesses.values())
+        # Filter out None values (these are existing businesses from previous runs)
+        unique_leads = [lead for lead in self.seen_businesses.values() if lead is not None]
 
         # Sort by score
         unique_leads.sort(key=lambda x: x.total_score, reverse=True)
@@ -427,7 +439,8 @@ class LeadProspector:
                             logger.debug(f"Progress tracker update failed: {e}")
 
                     # Fetch details for leads without websites if requested
-                    if fetch_details and name in ("BBB", "Yelp"):
+                    # Google Maps, BBB, Yelp all need detail page visits to get websites
+                    if fetch_details and name in ("Google Maps", "BBB", "Yelp"):
                         leads_needing_details = [
                             lead
                             for lead in leads
@@ -436,10 +449,12 @@ class LeadProspector:
                             and not lead.is_sponsored
                         ]
                         if leads_needing_details:
+                            # Limit to first 15 for speed (detail fetching is slow)
+                            leads_to_fetch = leads_needing_details[:15]
                             console.print(
-                                f"    [dim cyan]Fetching details for {len(leads_needing_details)} {name} leads...[/dim cyan]"
+                                f"    [dim cyan]Fetching details for {len(leads_to_fetch)}/{len(leads_needing_details)} {name} leads...[/dim cyan]"
                             )
-                            for lead in leads_needing_details:
+                            for lead in leads_to_fetch:
                                 try:
                                     await scraper.get_details(lead)
                                 except Exception as detail_err:
@@ -562,11 +577,30 @@ class LeadProspector:
 
         return list(merged.values())
 
-    def _normalize_business_key(self, name: str, address: str) -> str:
-        """Create a normalized key for deduplication."""
+    def _normalize_business_key(self, name: str, address: str, city: str = "", state: str = "") -> str:
+        """Create a normalized key for deduplication.
+        
+        Uses name|city|state format for cross-file duplicate detection.
+        """
         name_norm = self._normalize_name(name)
-        addr_norm = "".join(c for c in address.lower() if c.isalnum())[:30]
-        return f"{name_norm}_{addr_norm}"
+        
+        # If city/state provided directly, use them
+        if city and state:
+            return f"{name_norm}|{city.lower().strip()}|{state.lower().strip()}"
+        
+        # Otherwise try to extract from address
+        # Address format: "123 Main St, City, ST" or "City, ST"
+        city_norm = ""
+        state_norm = ""
+        if address:
+            parts = address.split(",")
+            if len(parts) >= 2:
+                # Last part is usually state
+                state_norm = parts[-1].strip().lower()[:2]
+                # Second to last is usually city
+                city_norm = parts[-2].strip().lower() if len(parts) >= 2 else ""
+        
+        return f"{name_norm}|{city_norm}|{state_norm}"
 
     def _normalize_name(self, name: str) -> str:
         """Normalize business name for matching."""
@@ -676,11 +710,14 @@ class LeadProspector:
                 else:
                     continue
 
-                # Deduplicate
-                key = self._normalize_business_key(lead.name, lead.address)
+                # Deduplicate using name|city|state format
+                key = self._normalize_business_key(lead.name, lead.address, lead.city, lead.state)
                 if key not in self.seen_businesses:
                     self.seen_businesses[key] = lead
                     leads.append(lead)
+                else:
+                    # Skip duplicate (either from this run or previous runs)
+                    pass
 
                 # Rate limiting
                 await asyncio.sleep(0.2)

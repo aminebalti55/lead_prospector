@@ -13,7 +13,7 @@ class RunCreateRequest(BaseModel):
         default_factory=lambda: ["plumbing", "dental", "pest_control"]
     )
     skip_audit: bool = False
-    fetch_details: bool = False
+    fetch_details: bool = True  # Enabled by default - needed to get websites from Google Maps
     fetch_emails: bool = False
     skip_scrapers: list[str] = Field(default_factory=list)
     output_format: Literal["xlsx", "csv", "both"] = "xlsx"

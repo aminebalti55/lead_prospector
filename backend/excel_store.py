@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Set
 
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
@@ -23,6 +23,81 @@ EDITABLE_COLUMNS = [
     "Last_Contacted",
     "Follow_Up_Date",
 ]
+
+
+def get_existing_lead_ids() -> Set[str]:
+    """
+    Get all Lead_IDs from existing Excel files in the output directory.
+    Used for duplicate prevention across scraping runs.
+    """
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    existing_ids: Set[str] = set()
+    
+    for xlsx_file in OUTPUT_DIR.glob("*.xlsx"):
+        try:
+            with _EXCEL_LOCK:
+                wb = load_workbook(xlsx_file, data_only=True, read_only=True)
+                ws = wb[LEADS_SHEET_NAME] if LEADS_SHEET_NAME in wb.sheetnames else wb.active
+                
+                # Find Lead_ID column
+                headers = [cell.value for cell in ws[1]]
+                lead_id_col = None
+                for idx, header in enumerate(headers):
+                    if header == "Lead_ID":
+                        lead_id_col = idx
+                        break
+                
+                if lead_id_col is not None:
+                    for row in ws.iter_rows(min_row=2, values_only=True):
+                        if row and len(row) > lead_id_col and row[lead_id_col]:
+                            existing_ids.add(str(row[lead_id_col]))
+                
+                wb.close()
+        except Exception as e:
+            # Skip files that can't be read
+            continue
+    
+    return existing_ids
+
+
+def get_existing_businesses() -> Set[str]:
+    """
+    Get normalized business identifiers (name + city + state) from existing files.
+    Returns set of "business_name|city|state" strings for duplicate checking.
+    """
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    existing: Set[str] = set()
+    
+    for xlsx_file in OUTPUT_DIR.glob("*.xlsx"):
+        try:
+            with _EXCEL_LOCK:
+                wb = load_workbook(xlsx_file, data_only=True, read_only=True)
+                ws = wb[LEADS_SHEET_NAME] if LEADS_SHEET_NAME in wb.sheetnames else wb.active
+                
+                # Find relevant columns
+                headers = [cell.value for cell in ws[1]]
+                name_col = city_col = state_col = None
+                for idx, header in enumerate(headers):
+                    if header == "Business_Name":
+                        name_col = idx
+                    elif header == "City":
+                        city_col = idx
+                    elif header == "State":
+                        state_col = idx
+                
+                if name_col is not None:
+                    for row in ws.iter_rows(min_row=2, values_only=True):
+                        if row and len(row) > name_col and row[name_col]:
+                            name = str(row[name_col]).lower().strip()
+                            city = str(row[city_col]).lower().strip() if city_col and len(row) > city_col and row[city_col] else ""
+                            state = str(row[state_col]).lower().strip() if state_col and len(row) > state_col and row[state_col] else ""
+                            existing.add(f"{name}|{city}|{state}")
+                
+                wb.close()
+        except Exception:
+            continue
+    
+    return existing
 
 
 def _safe_output_path(filename: str) -> Path:

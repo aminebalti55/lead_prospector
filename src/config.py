@@ -205,9 +205,10 @@ class ScoringSettings(BaseSettings):
         "few_reviews": 5,
     }
 
-    # Score thresholds
-    high_priority_threshold: int = 60  # Scores >= this are hot leads
-    medium_priority_threshold: int = 35  # Scores >= this are warm leads
+    # Score thresholds (adjusted for scraping mode where website audit is often skipped)
+    # no_website (25) + few_reviews (5) + low_rating (10) = 40 max without audit
+    high_priority_threshold: int = 35  # Scores >= this are hot leads
+    medium_priority_threshold: int = 25  # Scores >= this are warm leads
 
     class Config:
         extra = "ignore"

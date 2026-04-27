@@ -8,19 +8,39 @@ from src.core.scraper_engine import ScraperEngine
 logger = logging.getLogger(__name__)
 
 
+def _first(elements):
+    """Get first element from css() result list, or None."""
+    return elements[0] if elements else None
+
+
 class IndeedScraper:
     SOURCE_NAME = "indeed"
 
     def __init__(self, engine: ScraperEngine):
         self.engine = engine
 
-    async def search(self, keywords: list[str], max_results: int = 20) -> list[DirectLead]:
+    # Indeed country domain mapping
+    COUNTRY_DOMAINS = {
+        "US": "www.indeed.com",
+        "GB": "uk.indeed.com",
+        "CA": "ca.indeed.com",
+        "AU": "au.indeed.com",
+        "FR": "fr.indeed.com",
+        "DE": "de.indeed.com",
+        "TN": "tn.indeed.com",
+        "MA": "ma.indeed.com",
+        "AE": "ae.indeed.com",
+        "SA": "sa.indeed.com",
+    }
+
+    async def search(self, keywords: list[str], max_results: int = 20, country: str = "") -> list[DirectLead]:
         leads = []
+        domain = self.COUNTRY_DOMAINS.get(country.upper(), "www.indeed.com") if country else "www.indeed.com"
         for kw in keywords[:5]:
             query = f"{kw} freelance OR contract"
-            url = f"https://www.indeed.com/jobs?q={query.replace(' ', '+')}&sort=date&limit=25"
+            url = f"https://{domain}/jobs?q={query.replace(' ', '+')}&sort=date&limit=25"
             try:
-                response = self.engine.fetch_with_retry(url, self.SOURCE_NAME)
+                response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
                 if response:
                     new_leads = self._parse_results(response)
                     leads.extend(new_leads)
@@ -32,20 +52,18 @@ class IndeedScraper:
 
     def _parse_results(self, page) -> list[DirectLead]:
         leads = []
-        # Indeed uses div.job_seen_beacon or div.resultContent for job cards
         job_cards = (
             page.css("div.job_seen_beacon")
             or page.css("div.resultContent")
             or page.css("td.resultContent")
         )
 
-        for card in job_cards:
+        for card in (job_cards or []):
             try:
-                # Title from h2 > a or a.jcs-JobTitle
                 title_el = (
-                    card.css_first("h2.jobTitle a")
-                    or card.css_first("a.jcs-JobTitle")
-                    or card.css_first("h2 a")
+                    _first(card.css("h2.jobTitle a"))
+                    or _first(card.css("a.jcs-JobTitle"))
+                    or _first(card.css("h2 a"))
                 )
                 if not title_el:
                     continue
@@ -53,32 +71,28 @@ class IndeedScraper:
                 href = title_el.attrib.get("href", "")
                 job_url = f"https://www.indeed.com{href}" if href.startswith("/") else href
 
-                # Company
                 company_el = (
-                    card.css_first("span.css-1h7lukg")
-                    or card.css_first("span.companyName")
-                    or card.css_first("[data-testid='company-name']")
+                    _first(card.css("span.css-1h7lukg"))
+                    or _first(card.css("span.companyName"))
+                    or _first(card.css("[data-testid='company-name']"))
                 )
                 company = company_el.get_all_text().strip() if company_el else None
 
-                # Location
                 loc_el = (
-                    card.css_first("div.css-1restlb")
-                    or card.css_first("div.companyLocation")
-                    or card.css_first("[data-testid='text-location']")
+                    _first(card.css("div.css-1restlb"))
+                    or _first(card.css("div.companyLocation"))
+                    or _first(card.css("[data-testid='text-location']"))
                 )
                 location = loc_el.get_all_text().strip() if loc_el else None
 
-                # Description snippet
                 desc_el = (
-                    card.css_first("div.css-9446fg")
-                    or card.css_first("div.job-snippet")
-                    or card.css_first("table.jobCardShelfContainer")
+                    _first(card.css("div.css-9446fg"))
+                    or _first(card.css("div.job-snippet"))
+                    or _first(card.css("table.jobCardShelfContainer"))
                 )
                 description = desc_el.get_all_text().strip() if desc_el else title
 
-                # Date - extract from span.date or similar
-                date_el = card.css_first("span.date") or card.css_first("span.css-qvloho")
+                date_el = _first(card.css("span.date")) or _first(card.css("span.css-qvloho"))
                 posted_date = self._parse_date(
                     date_el.get_all_text().strip() if date_el else ""
                 )
@@ -99,7 +113,6 @@ class IndeedScraper:
         return leads
 
     def _parse_date(self, text: str) -> datetime | None:
-        """Parse Indeed's relative date (e.g., '3 days ago', 'Today', 'Just posted')."""
         text = text.lower().strip()
         if not text:
             return None

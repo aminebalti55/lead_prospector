@@ -34,7 +34,11 @@ class RedditScraper:
                             pd = post.get("data", {})
                             flair = (pd.get("link_flair_text") or "").lower()
                             title_lower = pd.get("title", "").lower()
-                            if flair in ["hiring", "for hire"] or "[hiring]" in title_lower:
+                            # Only match [Hiring] posts (people looking to hire)
+                            # Exclude [For Hire] posts (people offering their services)
+                            if "[for hire]" in title_lower or flair == "for hire":
+                                continue
+                            if flair == "hiring" or "[hiring]" in title_lower:
                                 lead = DirectLead(
                                     source="reddit",
                                     title=pd.get("title", ""),

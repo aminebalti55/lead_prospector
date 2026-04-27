@@ -24,6 +24,7 @@ class RateLimiter:
         "clutch": {"min_delay": 1, "max_delay": 3, "hourly_cap": 300},
         "goodfirms": {"min_delay": 1, "max_delay": 3, "hourly_cap": 300},
         "twitter": {"min_delay": 2, "max_delay": 5, "hourly_cap": 150},
+        "linkedin_posts": {"min_delay": 3, "max_delay": 6, "hourly_cap": 100},
         "reddit": {"min_delay": 1, "max_delay": 2, "hourly_cap": 500},
     }
 
@@ -106,6 +107,7 @@ class ScraperEngine:
         "clutch": "http",
         "goodfirms": "http",
         "twitter": "stealth",
+        "linkedin_posts": "stealth",
         "reddit": "http",
     }
 
@@ -113,30 +115,62 @@ class ScraperEngine:
         self.rate_limiter = RateLimiter()
         self.proxy_url = proxy_url
 
-    def _get_fetcher(self, source: str):
-        """Return the appropriate Scrapling fetcher for a source."""
-        tier = self.FETCHER_MAP.get(source, "http")
-        if tier == "dynamic":
-            return DynamicFetcher
-        elif tier == "stealth":
-            return StealthyFetcher
-        else:
-            return Fetcher
+    def _get_fetcher_tier(self, source: str) -> str:
+        """Return the fetcher tier for a source."""
+        return self.FETCHER_MAP.get(source, "http")
 
     def fetch(self, url: str, source: str):
-        """Fetch a URL using the appropriate fetcher for the source. Returns Scrapling response."""
+        """Sync fetch — only works for 'http' tier (Fetcher). For stealth/dynamic use async_fetch."""
         self.rate_limiter.wait_sync(source)
         self.rate_limiter.record_request(source)
-        fetcher_class = self._get_fetcher(source)
+        tier = self._get_fetcher_tier(source)
         try:
-            response = fetcher_class().get(url)
+            if tier in ("stealth", "dynamic"):
+                # Can't call Playwright sync inside asyncio — use a subprocess workaround
+                raise RuntimeError(
+                    f"Source '{source}' requires stealth/dynamic fetcher. "
+                    f"Use async_fetch() or async_fetch_with_retry() instead."
+                )
+            response = Fetcher().get(url)
             return response
         except Exception as e:
             logger.error(f"[{source}] Error fetching {url}: {e}")
             raise
 
+    async def async_fetch(self, url: str, source: str):
+        """Async fetch — works for all fetcher tiers including stealth/dynamic."""
+        await self.rate_limiter.wait_async(source)
+        self.rate_limiter.record_request(source)
+        tier = self._get_fetcher_tier(source)
+        try:
+            if tier == "dynamic":
+                response = await DynamicFetcher.async_fetch(url)
+            elif tier == "stealth":
+                response = await StealthyFetcher.async_fetch(url)
+            else:
+                # Fetcher is sync-only, run in thread
+                response = await asyncio.to_thread(Fetcher().get, url)
+            return response
+        except Exception as e:
+            logger.error(f"[{source}] Error fetching {url}: {e}")
+            raise
+
+    async def async_fetch_with_retry(self, url: str, source: str, max_retries: int = 3):
+        """Async fetch with exponential backoff retry."""
+        for attempt in range(max_retries):
+            try:
+                return await self.async_fetch(url, source)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                wait = (2 ** attempt) * 2  # 2s, 4s, 8s
+                logger.warning(
+                    f"[{source}] Retry {attempt+1}/{max_retries} for {url}, waiting {wait}s: {e}"
+                )
+                await asyncio.sleep(wait)
+
     def fetch_with_retry(self, url: str, source: str, max_retries: int = 3):
-        """Fetch with exponential backoff retry."""
+        """Sync fetch with retry — only for 'http' tier sources."""
         for attempt in range(max_retries):
             try:
                 return self.fetch(url, source)

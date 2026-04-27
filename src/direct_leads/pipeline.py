@@ -15,6 +15,7 @@ from src.direct_leads.scrapers.linkedin_jobs import LinkedInJobsScraper
 from src.direct_leads.scrapers.clutch import ClutchScraper
 from src.direct_leads.scrapers.goodfirms import GoodFirmsScraper
 from src.direct_leads.scrapers.twitter import TwitterScraper
+from src.direct_leads.scrapers.linkedin_posts import LinkedInPostsScraper
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ SCRAPER_CLASSES = {
     "reddit": RedditScraper,
     "indeed": IndeedScraper,
     "linkedin": LinkedInJobsScraper,
+    "linkedin_posts": LinkedInPostsScraper,
     "clutch": ClutchScraper,
     "goodfirms": GoodFirmsScraper,
     "twitter": TwitterScraper,
@@ -40,10 +42,12 @@ class DirectLeadsPipeline:
         sources: list[str] | None = None,
         max_results: int = 20,
         progress_callback=None,
+        source_configs: dict | None = None,
     ) -> list[str]:
         """Run the direct leads pipeline. Returns list of output file paths."""
         active_sources = sources or list(SCRAPER_CLASSES.keys())
         existing_urls = get_existing_direct_lead_urls()
+        source_configs = source_configs or {}
 
         # 1. Scrape from selected sources
         all_leads: list[DirectLead] = []
@@ -57,7 +61,12 @@ class DirectLeadsPipeline:
 
             try:
                 scraper = SCRAPER_CLASSES[source_name](self.engine)
-                leads = await scraper.search(keywords, max_results)
+                # Pass source-specific config (e.g. country) if scraper supports it
+                config = source_configs.get(source_name, {})
+                search_kwargs = {"keywords": keywords, "max_results": max_results}
+                if config.get("country"):
+                    search_kwargs["country"] = config["country"]
+                leads = await scraper.search(**search_kwargs)
                 all_leads.extend(leads)
                 logger.info(f"[{source_name}] Found {len(leads)} leads")
             except Exception as e:

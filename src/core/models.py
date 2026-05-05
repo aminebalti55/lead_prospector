@@ -218,6 +218,13 @@ class DirectLead:
     url: str = ""
     posted_date: Optional[datetime] = None
 
+    # Lead subtype distinguishes "they're hiring you" from "they're an agency
+    # you might subcontract to or partner with." Most sources are job boards —
+    # default to "hiring." GoodFirms / Clutch list dev agencies and override
+    # to "agency" so downstream UI can route them to a different outreach
+    # script (subcontract pitch vs. job application).
+    lead_subtype: str = "hiring"  # "hiring" | "agency"
+
     # Company info
     company_name: str = ""
     company_website: str = ""
@@ -279,6 +286,7 @@ class Opportunity:
     description: str
     url: str
     posted_date: Optional[str] = None  # ISO date string
+    lead_subtype: str = "hiring"        # "hiring" | "agency"
     company_name: str = ""
     location: str = ""
     contact_email: str = ""

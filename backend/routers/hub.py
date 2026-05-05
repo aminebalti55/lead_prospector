@@ -68,6 +68,7 @@ def _load_all_opportunity_dicts() -> list[dict]:
         for row in rows:
             lead = DirectLead(
                 source=row.get("Source") or "",
+                lead_subtype=row.get("Lead_Subtype") or "hiring",
                 title=row.get("Title") or "",
                 description=row.get("Description") or "",
                 url=row.get("URL") or "",

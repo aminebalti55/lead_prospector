@@ -59,6 +59,7 @@ def _load_all_opportunities() -> list[dict]:
             # Re-hydrate enough of a DirectLead to reuse the converter.
             lead = DirectLead(
                 source=row.get("Source") or "",
+                lead_subtype=row.get("Lead_Subtype") or "hiring",
                 title=row.get("Title") or "",
                 description=row.get("Description") or "",
                 url=row.get("URL") or "",

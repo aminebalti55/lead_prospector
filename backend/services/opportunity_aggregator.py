@@ -108,6 +108,7 @@ def direct_lead_to_opportunity(lead: DirectLead, source_file: str) -> Opportunit
         description=lead.description or "",
         url=lead.url,
         posted_date=lead.posted_date.isoformat() if lead.posted_date else None,
+        lead_subtype=lead.lead_subtype or "hiring",
         company_name=lead.company_name or "",
         location=lead.location or "",
         contact_email=lead.contact_email or "",

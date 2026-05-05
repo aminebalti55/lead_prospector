@@ -112,6 +112,7 @@ class GoodFirmsScraper:
 
                         lead = DirectLead(
                             source="goodfirms",
+                            lead_subtype="agency",
                             title=f"{company_name} - {kw}",
                             description=description[:2000],
                             url=detail_url,

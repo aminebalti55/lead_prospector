@@ -166,6 +166,7 @@ class DirectLeadsPipeline:
                 "Priority": priority.upper(),
                 "Relevance_Score": lead.relevance_score,
                 "Source": lead.source,
+                "Lead_Subtype": lead.lead_subtype,
                 "Title": lead.title,
                 "Description": lead.description[:500],
                 "URL": lead.url,

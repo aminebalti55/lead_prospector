@@ -51,46 +51,46 @@ class IndeedScraper:
         return leads[:max_results]
 
     def _parse_results(self, page) -> list[DirectLead]:
-        leads = []
-        job_cards = (
-            page.css("div.job_seen_beacon")
-            or page.css("div.resultContent")
-            or page.css("td.resultContent")
-        )
+        leads: list[DirectLead] = []
+        seen_jk: set[str] = set()
 
-        for card in (job_cards or []):
+        cards = page.css("div.job_seen_beacon")
+        if not cards:
+            # Fallback: walk up from the data-jk anchor
+            jk_anchors = page.css("a[data-jk]")
+            cards = [a.find_ancestor("div") for a in jk_anchors if hasattr(a, "find_ancestor")]
+            cards = [c for c in cards if c is not None]
+
+        for card in cards:
             try:
-                title_el = (
-                    _first(card.css("h2.jobTitle a"))
-                    or _first(card.css("a.jcs-JobTitle"))
-                    or _first(card.css("h2 a"))
-                )
-                if not title_el:
+                jk_anchor = card.css("a[data-jk]")
+                if not jk_anchor:
                     continue
-                title = title_el.get_all_text().strip()
-                href = title_el.attrib.get("href", "")
-                job_url = f"https://www.indeed.com{href}" if href.startswith("/") else href
+                jk = jk_anchor[0].attrib.get("data-jk", "")
+                if not jk or jk in seen_jk:
+                    continue
+                seen_jk.add(jk)
 
-                company_el = (
-                    _first(card.css("span.css-1h7lukg"))
-                    or _first(card.css("span.companyName"))
-                    or _first(card.css("[data-testid='company-name']"))
-                )
-                company = company_el.get_all_text().strip() if company_el else None
+                title_el = card.css("h2.jobTitle a")
+                title = title_el[0].get_all_text().strip() if title_el else ""
+                if not title:
+                    continue
 
-                loc_el = (
-                    _first(card.css("div.css-1restlb"))
-                    or _first(card.css("div.companyLocation"))
-                    or _first(card.css("[data-testid='text-location']"))
-                )
-                location = loc_el.get_all_text().strip() if loc_el else None
+                # Build a stable URL from data-jk (Indeed always exposes this path)
+                url = f"https://www.indeed.com/viewjob?jk={jk}"
 
-                desc_el = (
-                    _first(card.css("div.css-9446fg"))
-                    or _first(card.css("div.job-snippet"))
-                    or _first(card.css("table.jobCardShelfContainer"))
+                company_el = card.css('[data-testid="company-name"]')
+                company = company_el[0].get_all_text().strip() if company_el else ""
+
+                loc_el = card.css('[data-testid="text-location"]')
+                location = loc_el[0].get_all_text().strip() if loc_el else ""
+
+                snippet_el = card.css('[data-testid="job-snippet-renderer"]')
+                description = (
+                    snippet_el[0].get_all_text().strip()[:2000]
+                    if snippet_el
+                    else title  # fallback: title-as-description (better than empty)
                 )
-                description = desc_el.get_all_text().strip() if desc_el else title
 
                 date_el = _first(card.css("span.date")) or _first(card.css("span.css-qvloho"))
                 posted_date = self._parse_date(
@@ -100,16 +100,17 @@ class IndeedScraper:
                 lead = DirectLead(
                     source="indeed",
                     title=title,
-                    description=description[:2000],
-                    url=job_url,
+                    description=description,
+                    url=url,
                     posted_date=posted_date,
                     company_name=company,
                     location=location,
                 )
                 leads.append(lead)
             except Exception as e:
-                logger.debug(f"Failed to parse Indeed card: {e}")
+                logger.debug(f"Indeed card parse error: {e}")
                 continue
+
         return leads
 
     def _parse_date(self, text: str) -> datetime | None:

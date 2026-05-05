@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.routers import cold_outreach, direct_leads, shared
+from backend.routers import cold_outreach, direct_leads, opportunities, shared
 from backend.scheduler import Scheduler
 
 app = FastAPI(title="Lead Prospector API", version="2.0.0")
@@ -42,6 +42,7 @@ app.add_middleware(
 app.include_router(cold_outreach.router)
 app.include_router(direct_leads.router)
 app.include_router(shared.router)
+app.include_router(opportunities.router)
 
 scheduler = Scheduler()
 

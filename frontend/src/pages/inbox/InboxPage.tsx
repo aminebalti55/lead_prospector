@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useOpportunities } from "../../api/opportunities";
 import type { OpportunityFilters, Priority, OpportunityType } from "../../types/opportunity";
 import { FilterPanel } from "./FilterPanel";
@@ -7,11 +8,18 @@ import { OpportunityDetail } from "./OpportunityDetail";
 
 export function InboxPage() {
   const [filters, setFilters] = useState<OpportunityFilters>({ sort: "score", limit: 200 });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const oppFromUrl = searchParams.get("opp");
+  const [selectedId, setSelectedId] = useState<string | null>(oppFromUrl);
 
   const { data, isLoading } = useOpportunities(filters);
   const items = data?.opportunities ?? [];
   const selected = items.find((o) => o.id === selectedId) ?? items[0] ?? null;
+
+  // If URL ?opp= param changes, prefer it over current selection
+  useEffect(() => {
+    if (oppFromUrl && oppFromUrl !== selectedId) setSelectedId(oppFromUrl);
+  }, [oppFromUrl, selectedId]);
 
   // Auto-select first item when list changes and nothing is selected
   useEffect(() => {

@@ -6,14 +6,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from src.core.models import Stage
 
-# Stage groupings — must match src/core/models.py Stage enum
-_PIPELINE_STAGES = {"new", "researching", "contacted", "replied", "meeting"}
-_CONTACTED_OR_LATER = {"contacted", "replied", "meeting", "won"}
-_RESPONDED = {"replied", "meeting", "won"}
+# Stage groupings derived from the canonical Stage enum.
+_PIPELINE_STAGES = {Stage.NEW.value, Stage.RESEARCHING.value, Stage.CONTACTED.value, Stage.REPLIED.value, Stage.MEETING.value}
+_CONTACTED_OR_LATER = {Stage.CONTACTED.value, Stage.REPLIED.value, Stage.MEETING.value, Stage.WON.value}
+_RESPONDED = {Stage.REPLIED.value, Stage.MEETING.value, Stage.WON.value}
+
+# Scan-status string constants.
+_SCAN_RUNNING = "running"
+_SCAN_COMPLETED = "completed"
+_SCAN_FAILED = "failed"
 
 # Sources we always show in the Pulse Bar / Scraper Status (even if idle).
-_KNOWN_DIRECT_SOURCES = ["reddit", "linkedin", "linkedin_posts", "indeed", "twitter", "clutch", "goodfirms"]
+_KNOWN_DIRECT_SOURCES = ["reddit", "linkedin", "linkedin_posts", "indeed", "twitter", "clutch", "goodfirms", "tanit"]
 _KNOWN_COLD_SOURCES = ["google_maps", "yelp", "bbb", "yellowpages", "manta"]
 
 
@@ -44,7 +50,7 @@ def compute_stats(opportunities: list[dict]) -> dict[str, Any]:
                 except (ValueError, TypeError):
                     pass
 
-        if stage == "won":
+        if stage == Stage.WON.value:
             won_total += value
             count_won += 1
 
@@ -99,11 +105,11 @@ def compute_pulse_status(scans: list[dict], opportunities: list[dict]) -> list[d
             if src in per_source:
                 continue
             status_str = scan.get("status") or ""
-            if status_str == "running":
+            if status_str == _SCAN_RUNNING:
                 per_source[src] = {"status": "live", "label": "scraping"}
-            elif status_str == "failed":
+            elif status_str == _SCAN_FAILED:
                 per_source[src] = {"status": "error", "label": scan.get("error") or "blocked"}
-            elif status_str == "completed":
+            elif status_str == _SCAN_COMPLETED:
                 per_source[src] = {"status": "idle", "label": "idle"}
             else:
                 per_source[src] = {"status": "idle", "label": status_str or "idle"}
@@ -136,8 +142,8 @@ def compute_activity(scans: list[dict], opportunities: list[dict], limit: int = 
         ts = scan.get("finished_at") or scan.get("started_at") or scan.get("created_at")
         if not ts:
             continue
-        kind = "scan_completed" if scan.get("status") == "completed" else (
-            "scan_failed" if scan.get("status") == "failed" else "scan_running"
+        kind = "scan_completed" if scan.get("status") == _SCAN_COMPLETED else (
+            "scan_failed" if scan.get("status") == _SCAN_FAILED else "scan_running"
         )
         events.append({
             "id": f"scan_{scan.get('id', '')}",

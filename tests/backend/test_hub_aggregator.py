@@ -186,3 +186,28 @@ def test_activity_sorted_by_timestamp_desc_and_limited():
     # Most recent first
     assert activity[0]["id"].endswith("s3")
     assert activity[1]["id"].endswith("s2")
+
+
+def test_stats_handles_none_value():
+    """Opportunities with estimated_value_usd=None should not crash, contribute 0."""
+    opps = [
+        _opp(stage="new", value=None),
+        _opp(stage="contacted", value=None),
+        _opp(stage="contacted", value=2000),
+    ]
+    stats = compute_stats(opps)
+    assert stats["pipeline_total_usd"] == 2000  # only the third opp counts
+    assert stats["count_pipeline"] == 3
+
+
+def test_pulse_status_handles_scan_with_no_sources():
+    """Scan dict missing 'sources' key (or with None/[]) should not crash."""
+    scans = [
+        {"id": "s1", "status": "running"},  # no sources key at all
+        {"id": "s2", "status": "completed", "sources": None},
+        {"id": "s3", "status": "completed", "sources": []},
+    ]
+    pulse = compute_pulse_status(scans=scans, opportunities=[])
+    # All known sources still present, all idle
+    assert any(p["source"] == "reddit" for p in pulse)
+    assert all(p["status"] == "idle" for p in pulse)

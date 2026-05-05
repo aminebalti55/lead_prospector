@@ -1,7 +1,10 @@
 """Tanit Jobs scraper — Tunisian job board, Cloudflare-protected.
 
-Routes through ScraperEngine which uses StealthyFetcher for the 'tanit' tier
-(see src/core/scraper_engine.py FETCHER_MAP).
+Tanit's Cloudflare config is stricter than what ScraperEngine's default
+StealthyFetcher call clears — we need `solve_cloudflare=True` and a wait_selector
+for the listings article to appear. So this scraper bypasses engine.async_fetch
+and calls StealthyFetcher directly with tuned kwargs, while still using the
+engine's rate limiter for politeness.
 """
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ import re
 from urllib.parse import quote_plus, urlparse
 
 from bs4 import BeautifulSoup
+from scrapling import StealthyFetcher
 
 from src.core.models import DirectLead
 from src.core.scraper_engine import ScraperEngine
@@ -122,11 +126,27 @@ class TanitScraper:
                 page=page,
             )
             try:
-                response = await self.engine.async_fetch(url, "tanit")
+                # Rate-limit via the engine's limiter (don't spam Tanit), but
+                # call StealthyFetcher directly to pass Cloudflare-bypass kwargs.
+                await self.engine.rate_limiter.wait_async("tanit")
+                self.engine.rate_limiter.record_request("tanit")
+                response = await StealthyFetcher.async_fetch(
+                    url,
+                    solve_cloudflare=True,
+                    wait_selector="article.listing-item__jobs",
+                    wait=3000,
+                    network_idle=True,
+                    google_search=True,
+                )
                 if not response:
                     continue
-                html = response.get_all_text()
-                page_leads = parse_listing_html(html)
+                # Use html_content (raw HTML) not get_all_text (strips tags)
+                html = (
+                    response.html_content
+                    if getattr(response, "html_content", None)
+                    else (response.body or b"").decode("utf-8", errors="replace")
+                )
+                page_leads = parse_listing_html(str(html))
                 all_leads.extend(page_leads)
                 # If a page returned zero results, we've hit the end — stop early.
                 if len(page_leads) == 0:

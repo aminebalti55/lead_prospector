@@ -125,45 +125,54 @@ def test_lead_source_is_tanit():
     assert all(lead.source == "tanit" for lead in leads)
 
 
-def test_search_calls_engine_with_correct_url():
-    """Mock the ScraperEngine to verify the search URL is built correctly."""
+def _make_fake_engine():
+    """ScraperEngine mock with a working rate_limiter (no-op async waits)."""
+    fake_engine = MagicMock()
+    async def _wait_async(source): pass
+    fake_engine.rate_limiter.wait_async = _wait_async
+    fake_engine.rate_limiter.record_request = MagicMock()
+    return fake_engine
+
+
+def test_search_calls_stealthy_fetcher_with_correct_url(monkeypatch):
+    """Mock StealthyFetcher.async_fetch to verify URL + Cloudflare-bypass kwargs."""
+    from src.direct_leads.scrapers import tanit as tanit_mod
     fake_response = MagicMock()
     fake_response.get_all_text = MagicMock(return_value=FIXTURE_HTML)
 
     called = {}
-    async def fake_fetch(url, source):
+    async def fake_fetch(url, **kwargs):
         called["url"] = url
-        called["source"] = source
+        called["kwargs"] = kwargs
         return fake_response
 
-    fake_engine = MagicMock()
-    fake_engine.async_fetch = fake_fetch
+    monkeypatch.setattr(tanit_mod.StealthyFetcher, "async_fetch", fake_fetch)
 
-    scraper = TanitScraper(fake_engine)
+    scraper = TanitScraper(_make_fake_engine())
     leads = asyncio.get_event_loop().run_until_complete(
         scraper.search(keywords=["react"], max_results=20)
     )
 
-    assert called["source"] == "tanit"
     assert "tanitjobs.com/jobs" in called["url"]
     assert "q=react" in called["url"]
+    assert called["kwargs"].get("solve_cloudflare") is True
     assert len(leads) == 2  # From fixture
 
 
-def test_search_paginates_when_max_results_exceeds_one_page():
+def test_search_paginates_when_max_results_exceeds_one_page(monkeypatch):
     """With max_results=50, scraper requests at least 3 pages (50/23 = ceil(2.17) = 3)."""
+    from src.direct_leads.scrapers import tanit as tanit_mod
     fake_response = MagicMock()
     fake_response.get_all_text = MagicMock(return_value=FIXTURE_HTML)
 
     page_calls: list[str] = []
-    async def fake_fetch(url, source):
+    async def fake_fetch(url, **kwargs):
         page_calls.append(url)
         return fake_response
 
-    fake_engine = MagicMock()
-    fake_engine.async_fetch = fake_fetch
+    monkeypatch.setattr(tanit_mod.StealthyFetcher, "async_fetch", fake_fetch)
 
-    scraper = TanitScraper(fake_engine)
+    scraper = TanitScraper(_make_fake_engine())
     asyncio.get_event_loop().run_until_complete(
         scraper.search(keywords=["react"], max_results=50)
     )

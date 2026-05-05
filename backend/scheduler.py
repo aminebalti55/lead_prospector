@@ -37,6 +37,7 @@ class Scheduler:
         while self._running:
             try:
                 await self._check_saved_searches()
+                await self._reconcile_stuck_scans()
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
             await asyncio.sleep(60)
@@ -80,6 +81,41 @@ class Scheduler:
 
         if updated:
             SAVED_SEARCHES_FILE.write_text(json.dumps(searches, indent=2))
+
+    async def _reconcile_stuck_scans(self) -> None:
+        """Mark scans that have been 'running' for >1 hour as failed."""
+        import json
+        from datetime import datetime, timedelta
+        from src.core.config import DIRECT_OUTPUT_DIR
+
+        scans_file = DIRECT_OUTPUT_DIR / "scans.json"
+        if not scans_file.exists():
+            return
+        try:
+            data = json.loads(scans_file.read_text())
+        except Exception:
+            return
+
+        cutoff = datetime.now() - timedelta(hours=1)
+        changed = False
+        for s in data:
+            if s.get("status") != "running":
+                continue
+            ts = s.get("started_at") or s.get("created_at")
+            if not ts:
+                continue
+            try:
+                t = datetime.fromisoformat(str(ts).replace("Z", "+00:00").replace("+00:00", ""))
+                if t < cutoff:
+                    s["status"] = "failed"
+                    s["error"] = "killed before completing (auto-reconciled)"
+                    s["finished_at"] = datetime.now().isoformat() + "Z"
+                    changed = True
+            except Exception:
+                continue
+
+        if changed:
+            scans_file.write_text(json.dumps(data, indent=2))
 
     @staticmethod
     def _parse_frequency(freq: str) -> float:

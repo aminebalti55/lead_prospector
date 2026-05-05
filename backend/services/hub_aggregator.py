@@ -3,7 +3,7 @@
 Pure functions over storage data — easy to unit test, no I/O."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.core.models import Stage
@@ -33,7 +33,9 @@ def compute_stats(opportunities: list[dict]) -> dict[str, Any]:
     contacted_or_later = 0
     responded = 0
 
-    week_ago = datetime.now() - timedelta(days=7)
+    # Use UTC to avoid TZ-aware vs TZ-naive comparison errors with posted_date
+    # values that may carry an explicit +00:00 / Z suffix.
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
     for o in opportunities:
         stage = o.get("stage") or "new"
@@ -45,7 +47,10 @@ def compute_stats(opportunities: list[dict]) -> dict[str, Any]:
             posted = o.get("posted_date")
             if posted:
                 try:
-                    if datetime.fromisoformat(posted) >= week_ago:
+                    parsed = datetime.fromisoformat(str(posted).replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    if parsed >= week_ago:
                         this_week_total += value
                 except (ValueError, TypeError):
                     pass

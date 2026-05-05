@@ -1,0 +1,34 @@
+import { useMutation } from "@tanstack/react-query";
+import { apiFetch } from "./client";
+
+export interface OutreachSendBody {
+  opportunity_id: string;
+  opportunity_type: "direct" | "cold";
+  source_file: string;
+  raw_lead_id: string;
+  current_stage: string;
+  template_id?: string;
+  custom_subject?: string;
+  custom_body?: string;
+  to_email: string;
+  to_name: string;
+  variables?: Record<string, string>;
+}
+
+export interface OutreachSendResponse {
+  success: boolean;
+  message: string;
+  sent_at: string | null;
+  stage_advanced: boolean;
+}
+
+export function useSendOutreach() {
+  return useMutation<OutreachSendResponse, Error, OutreachSendBody>({
+    mutationFn: (body) =>
+      apiFetch("/outreach/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+  });
+}

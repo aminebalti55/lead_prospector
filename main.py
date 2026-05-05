@@ -38,6 +38,7 @@ from rich.panel import Panel
 from rich import print as rprint
 
 from src.config import settings, validate_api_keys, get_missing_keys, OUTPUT_DIR
+from src.core.config import settings as core_settings
 from src.apis.google_places import GooglePlacesClient, GooglePlaceBusiness
 from src.apis.yelp import YelpClient, YelpBusiness
 from src.audit.website_auditor import WebsiteAuditor, WebsiteAuditResult, ReviewAnalyzer
@@ -976,13 +977,14 @@ Examples:
         help="Locations to search (e.g., 'Austin, TX' 'Houston, TX')",
     )
 
+    _all_niche_keys = sorted(core_settings.search.niches.keys())
     parser.add_argument(
         "--niches",
         "-n",
         nargs="+",
-        choices=["plumbing", "dental", "pest_control"],
-        default=["plumbing", "dental", "pest_control"],
-        help="Niches to search (default: all)",
+        choices=_all_niche_keys,
+        default=_all_niche_keys,
+        help=f"Niches to search (default: all). Available: {', '.join(_all_niche_keys)}",
     )
 
     parser.add_argument(

@@ -2,8 +2,6 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from scrapling import Fetcher
-
 from src.core.models import DirectLead
 from src.core.scraper_engine import ScraperEngine
 
@@ -27,7 +25,7 @@ class RedditScraper:
                         f"https://www.reddit.com/r/{subreddit}/search.json"
                         f"?q={kw}&restrict_sr=1&sort=new&limit=25"
                     )
-                    response = Fetcher().get(url)
+                    response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
                     if response:
                         data = json.loads(response.get_all_text())
                         for post in data.get("data", {}).get("children", []):

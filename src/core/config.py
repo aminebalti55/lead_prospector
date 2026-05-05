@@ -56,46 +56,84 @@ class APISettings(BaseSettings):
 class SearchSettings(BaseSettings):
     """Search and scraping configuration."""
 
-    # Target niches - keywords for each category
+    # Target niches - keywords for each category. High-ROI for cold-emailing
+    # SMBs as a freelance dev (web design / landing pages / booking systems).
     niches: dict = {
+        # Tier 1 - Home services ($3-10K project value, terrible sites, emergency-driven)
         "plumbing": [
-            "plumber",
-            "plumbing",
-            "plumbing service",
-            "emergency plumber",
-            "drain cleaning",
-            "pipe repair",
+            "plumber", "plumbing", "plumbing service",
+            "emergency plumber", "drain cleaning", "pipe repair",
         ],
-        "dental": [
-            "dentist",
-            "dental clinic",
-            "dental office",
-            "family dentist",
-            "cosmetic dentist",
-            "dental care",
+        "hvac": [
+            "hvac", "hvac contractor", "heating cooling", "air conditioning repair",
+            "furnace repair", "ac repair", "hvac service",
+        ],
+        "roofing": [
+            "roofing", "roofer", "roof repair", "roofing contractor",
+            "metal roofing", "shingle replacement",
         ],
         "pest_control": [
-            "pest control",
-            "exterminator",
-            "pest removal",
-            "termite control",
-            "rodent control",
-            "bug exterminator",
+            "pest control", "exterminator", "pest removal",
+            "termite control", "rodent control", "bug exterminator",
+        ],
+
+        # Tier 1 - Healthcare specialists (high LTV per patient, marketing-savvy)
+        "dental": [
+            "dentist", "dental clinic", "dental office",
+            "family dentist", "cosmetic dentist", "dental care",
+        ],
+        "cosmetic_dentist": [
+            "cosmetic dentist", "orthodontist", "invisalign provider",
+            "teeth whitening", "veneers dentist", "smile makeover",
+        ],
+        "med_spa": [
+            "med spa", "medical spa", "aesthetic clinic", "botox clinic",
+            "laser hair removal", "skin clinic",
+        ],
+
+        # Tier 1 - Legal (highest marketing spend per dollar earned)
+        "personal_injury_lawyer": [
+            "personal injury lawyer", "personal injury attorney", "accident lawyer",
+            "car accident lawyer", "injury law firm", "trial attorney",
+        ],
+
+        # Tier 2 - Real estate + auto (high-volume, lots of small budgets that add up)
+        "real_estate": [
+            "real estate broker", "realtor", "real estate agent",
+            "property management", "real estate office",
+        ],
+        "auto_repair": [
+            "auto repair", "auto shop", "mechanic", "auto body",
+            "transmission repair", "brake repair",
         ],
     }
 
-    # Yelp category aliases
+    # Yelp category aliases - slugs from yelp.com/categories
     yelp_categories: dict = {
         "plumbing": "plumbing",
+        "hvac": "hvac",
+        "roofing": "roofing",
+        "pest_control": "pestcontrol",
         "dental": "dentists",
-        "pest_control": "pest_control",
+        "cosmetic_dentist": "cosmeticdentists",
+        "med_spa": "medspas",
+        "personal_injury_lawyer": "personal_injury_law",
+        "real_estate": "realestateagents",
+        "auto_repair": "autorepair",
     }
 
-    # Google Places types
+    # Google Places types (https://developers.google.com/maps/documentation/places/web-service/supported_types)
     google_types: dict = {
         "plumbing": "plumber",
-        "dental": "dentist",
+        "hvac": "hvac_contractor",
+        "roofing": "roofing_contractor",
         "pest_control": "pest_control",
+        "dental": "dentist",
+        "cosmetic_dentist": "dentist",
+        "med_spa": "spa",
+        "personal_injury_lawyer": "lawyer",
+        "real_estate": "real_estate_agency",
+        "auto_repair": "car_repair",
     }
 
     # Search radius in meters (default 25 miles = ~40km)

@@ -8,12 +8,12 @@ interface Props {
 }
 
 const colorClass: Record<Status, string> = {
-  live: "bg-[--color-accent]",
-  idle: "bg-[--color-text-tertiary]",
-  error: "bg-[--color-hot]",
-  hot: "bg-[--color-hot]",
-  warm: "bg-[--color-warm]",
-  cold: "bg-[--color-cool]",
+  live: "bg-[var(--color-accent)]",
+  idle: "bg-[var(--color-text-tertiary)]",
+  error: "bg-[var(--color-hot)]",
+  hot: "bg-[var(--color-hot)]",
+  warm: "bg-[var(--color-warm)]",
+  cold: "bg-[var(--color-cool)]",
 };
 
 export function StatusDot({ status, className }: Props) {

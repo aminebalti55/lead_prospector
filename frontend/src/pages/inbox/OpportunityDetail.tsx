@@ -21,13 +21,13 @@ export function OpportunityDetail({ opp }: Props) {
             status={opp.priority === "hot" ? "hot" : opp.priority === "warm" ? "warm" : "cold"}
             className="mt-2"
           />
-          <h1 className="text-xl font-semibold text-[--color-text-primary] leading-tight flex-1">
+          <h1 className="text-xl font-semibold text-[var(--color-text-primary)] leading-tight flex-1">
             {opp.title || "(no title)"}
           </h1>
           <MoneyValue usd={opp.estimated_value_usd} size="xl" tone="accent" />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-[12px] text-[--color-text-secondary]">
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-[var(--color-text-secondary)]">
           <Pill tone="neutral">{opp.source}</Pill>
           {opp.company_name && <span>{opp.company_name}</span>}
           {opp.location && (
@@ -46,7 +46,7 @@ export function OpportunityDetail({ opp }: Props) {
               href={opp.url}
               target="_blank"
               rel="noreferrer"
-              className="flex items-center gap-1 text-[--color-accent] hover:underline"
+              className="flex items-center gap-1 text-[var(--color-accent)] hover:underline"
             >
               Open original <ExternalLink className="w-3 h-3" />
             </a>
@@ -56,7 +56,7 @@ export function OpportunityDetail({ opp }: Props) {
 
       {/* Stage selector */}
       <Card className="p-3">
-        <div className="text-[10px] uppercase tracking-wider text-[--color-text-tertiary] font-medium mb-2">
+        <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium mb-2">
           Stage
         </div>
         <div className="flex flex-wrap gap-1">
@@ -68,8 +68,8 @@ export function OpportunityDetail({ opp }: Props) {
               onClick={() => updateStage.mutate({ id: opp.id, stage: s })}
               className={
                 opp.stage === s
-                  ? "px-2.5 h-7 text-[12px] rounded-[--radius-sm] bg-[--color-accent] text-[#0A0A0B] font-medium"
-                  : "px-2.5 h-7 text-[12px] rounded-[--radius-sm] text-[--color-text-secondary] hover:bg-[--color-surface-raised]"
+                  ? "px-2.5 h-7 text-[12px] rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-[#0A0A0B] font-medium"
+                  : "px-2.5 h-7 text-[12px] rounded-[var(--radius-sm)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)]"
               }
             >
               {s}
@@ -81,10 +81,10 @@ export function OpportunityDetail({ opp }: Props) {
       {/* Description */}
       {opp.description && (
         <Card className="p-4">
-          <div className="text-[10px] uppercase tracking-wider text-[--color-text-tertiary] font-medium mb-2">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium mb-2">
             Description
           </div>
-          <p className="text-[13px] text-[--color-text-primary] whitespace-pre-wrap leading-relaxed">
+          <p className="text-[13px] text-[var(--color-text-primary)] whitespace-pre-wrap leading-relaxed">
             {opp.description}
           </p>
         </Card>
@@ -95,7 +95,7 @@ export function OpportunityDetail({ opp }: Props) {
         <Card className="p-4 flex flex-col gap-3">
           {opp.matched_skills.length > 0 && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-[--color-text-tertiary] font-medium mb-1.5">
+              <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium mb-1.5">
                 Matched skills
               </div>
               <div className="flex flex-wrap gap-1">
@@ -107,19 +107,19 @@ export function OpportunityDetail({ opp }: Props) {
           )}
           {opp.budget_signal && (
             <div className="text-[12px]">
-              <span className="text-[--color-text-tertiary]">Budget signal: </span>
-              <span className="text-[--color-text-primary]">{opp.budget_signal}</span>
+              <span className="text-[var(--color-text-tertiary)]">Budget signal: </span>
+              <span className="text-[var(--color-text-primary)]">{opp.budget_signal}</span>
             </div>
           )}
           {opp.urgency_signal && (
             <div className="text-[12px]">
-              <span className="text-[--color-text-tertiary]">Urgency: </span>
-              <span className="text-[--color-text-primary]">{opp.urgency_signal}</span>
+              <span className="text-[var(--color-text-tertiary)]">Urgency: </span>
+              <span className="text-[var(--color-text-primary)]">{opp.urgency_signal}</span>
             </div>
           )}
           {opp.pain_tags.length > 0 && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-[--color-text-tertiary] font-medium mb-1.5">
+              <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium mb-1.5">
                 Pain tags
               </div>
               <div className="flex flex-wrap gap-1">
@@ -135,13 +135,13 @@ export function OpportunityDetail({ opp }: Props) {
       {/* Contact */}
       {(opp.contact_email || opp.contact_phone) && (
         <Card className="p-4 flex flex-col gap-2">
-          <div className="text-[10px] uppercase tracking-wider text-[--color-text-tertiary] font-medium">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium">
             Contact
           </div>
           {opp.contact_email && (
             <a
               href={`mailto:${opp.contact_email}`}
-              className="text-[13px] text-[--color-accent] hover:underline flex items-center gap-2"
+              className="text-[13px] text-[var(--color-accent)] hover:underline flex items-center gap-2"
             >
               <Mail className="w-3.5 h-3.5" /> {opp.contact_email}
             </a>
@@ -149,7 +149,7 @@ export function OpportunityDetail({ opp }: Props) {
           {opp.contact_phone && (
             <a
               href={`tel:${opp.contact_phone}`}
-              className="text-[13px] text-[--color-text-primary] flex items-center gap-2"
+              className="text-[13px] text-[var(--color-text-primary)] flex items-center gap-2"
             >
               <Phone className="w-3.5 h-3.5" /> {opp.contact_phone}
             </a>

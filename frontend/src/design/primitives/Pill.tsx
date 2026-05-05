@@ -9,18 +9,18 @@ interface Props extends HTMLAttributes<HTMLSpanElement> {
 
 const toneClass: Record<Tone, string> = {
   neutral:
-    "bg-[--color-surface-raised] text-[--color-text-secondary] border border-[--color-border]",
-  hot: "bg-[--color-hot-soft] text-[--color-hot]",
-  warm: "bg-[--color-warm-soft] text-[--color-warm]",
-  cool: "bg-[--color-cool-soft] text-[--color-cool]",
-  accent: "bg-[--color-accent-soft] text-[--color-accent]",
+    "bg-[var(--color-surface-raised)] text-[var(--color-text-secondary)] border border-[var(--color-border)]",
+  hot: "bg-[var(--color-hot-soft)] text-[var(--color-hot)]",
+  warm: "bg-[var(--color-warm-soft)] text-[var(--color-warm)]",
+  cool: "bg-[var(--color-cool-soft)] text-[var(--color-cool)]",
+  accent: "bg-[var(--color-accent-soft)] text-[var(--color-accent)]",
 };
 
 export function Pill({ tone = "neutral", className, ...rest }: Props) {
   return (
     <span
       className={clsx(
-        "inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded-[--radius-sm] tabular-nums",
+        "inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded-[var(--radius-sm)] tabular-nums",
         toneClass[tone],
         className,
       )}

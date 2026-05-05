@@ -11,19 +11,19 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantClass: Record<Variant, string> = {
   primary:
-    "bg-[--color-accent] text-[#0A0A0B] hover:bg-[--color-accent-hover] font-medium",
+    "bg-[var(--color-accent)] text-[#0A0A0B] hover:bg-[var(--color-accent-hover)] font-medium",
   secondary:
-    "bg-[--color-surface-raised] text-[--color-text-primary] hover:bg-[--color-surface-hover] border border-[--color-border]",
+    "bg-[var(--color-surface-raised)] text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)] border border-[var(--color-border)]",
   ghost:
-    "bg-transparent text-[--color-text-secondary] hover:bg-[--color-surface-raised] hover:text-[--color-text-primary]",
+    "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text-primary)]",
   danger:
-    "bg-[--color-hot-soft] text-[--color-hot] hover:bg-[--color-hot] hover:text-white",
+    "bg-[var(--color-hot-soft)] text-[var(--color-hot)] hover:bg-[var(--color-hot)] hover:text-white",
 };
 
 const sizeClass: Record<Size, string> = {
-  sm: "h-7 px-2.5 text-xs rounded-[--radius-sm]",
-  md: "h-9 px-3.5 text-sm rounded-[--radius-md]",
-  lg: "h-11 px-5 text-sm rounded-[--radius-md]",
+  sm: "h-7 px-2.5 text-xs rounded-[var(--radius-sm)]",
+  md: "h-9 px-3.5 text-sm rounded-[var(--radius-md)]",
+  lg: "h-11 px-5 text-sm rounded-[var(--radius-md)]",
 };
 
 export const Button = forwardRef<HTMLButtonElement, Props>(

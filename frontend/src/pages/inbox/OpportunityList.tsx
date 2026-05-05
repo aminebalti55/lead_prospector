@@ -10,15 +10,15 @@ interface Props {
 
 export function OpportunityList({ items, selectedId, onSelect, loading }: Props) {
   return (
-    <div className="w-[380px] shrink-0 bg-[--color-bg] border-r border-[--color-border] flex flex-col">
-      <div className="h-9 px-3 flex items-center justify-between border-b border-[--color-border]">
-        <span className="text-[11px] uppercase tracking-wider text-[--color-text-tertiary] font-medium">
+    <div className="w-[380px] shrink-0 bg-[var(--color-bg)] border-r border-[var(--color-border)] flex flex-col">
+      <div className="h-9 px-3 flex items-center justify-between border-b border-[var(--color-border)]">
+        <span className="text-[11px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium">
           {loading ? "Loading…" : `${items.length} opportunities`}
         </span>
       </div>
       <div className="flex-1 overflow-auto">
         {items.length === 0 && !loading && (
-          <div className="p-6 text-center text-[12px] text-[--color-text-tertiary]">
+          <div className="p-6 text-center text-[12px] text-[var(--color-text-tertiary)]">
             No fresh prey. Run a scan from Sources to catch some.
           </div>
         )}

@@ -5,7 +5,7 @@ export function Card({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={clsx(
-        "bg-[--color-surface] border border-[--color-border] rounded-[--radius-lg]",
+        "bg-[var(--color-surface)] border border-[var(--color-border)] rounded-[var(--radius-lg)]",
         className,
       )}
       {...rest}

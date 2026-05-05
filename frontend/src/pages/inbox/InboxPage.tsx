@@ -49,7 +49,7 @@ export function InboxPage() {
       {selected ? (
         <OpportunityDetail opp={selected} />
       ) : (
-        <div className="flex-1 flex items-center justify-center text-[12px] text-[--color-text-tertiary]">
+        <div className="flex-1 flex items-center justify-center text-[12px] text-[var(--color-text-tertiary)]">
           {isLoading ? "Loading…" : "Select an opportunity to see details."}
         </div>
       )}

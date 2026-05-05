@@ -25,16 +25,16 @@ export function OpportunityListItem({ opp, active, onClick }: Props) {
       type="button"
       onClick={onClick}
       className={clsx(
-        "w-full text-left px-3 py-2.5 border-b border-[--color-border]",
+        "w-full text-left px-3 py-2.5 border-b border-[var(--color-border)]",
         "transition-colors flex flex-col gap-1.5",
         active
-          ? "bg-[--color-surface-raised]"
-          : "hover:bg-[--color-surface]",
+          ? "bg-[var(--color-surface-raised)]"
+          : "hover:bg-[var(--color-surface)]",
       )}
     >
       <div className="flex items-center gap-2 min-w-0">
         <StatusDot status={opp.priority === "hot" ? "hot" : opp.priority === "warm" ? "warm" : "cold"} />
-        <span className="text-[13px] font-medium text-[--color-text-primary] truncate flex-1">
+        <span className="text-[13px] font-medium text-[var(--color-text-primary)] truncate flex-1">
           {opp.title || "(no title)"}
         </span>
         <MoneyValue
@@ -43,7 +43,7 @@ export function OpportunityListItem({ opp, active, onClick }: Props) {
           tone="accent"
         />
       </div>
-      <div className="flex items-center gap-1.5 text-[11px] text-[--color-text-tertiary]">
+      <div className="flex items-center gap-1.5 text-[11px] text-[var(--color-text-tertiary)]">
         <Pill tone="neutral">{opp.source}</Pill>
         {opp.location && <span className="truncate">{opp.location}</span>}
         <span className="ml-auto tabular-nums">{formatAge(opp.posted_date)}</span>

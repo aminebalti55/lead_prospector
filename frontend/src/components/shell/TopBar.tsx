@@ -3,10 +3,10 @@ import { KbdHint } from "../../design/primitives";
 
 export function TopBar() {
   return (
-    <header className="h-11 shrink-0 border-b border-[--color-border] flex items-center px-4 gap-3 bg-[--color-bg]">
+    <header className="h-11 shrink-0 border-b border-[var(--color-border)] flex items-center px-4 gap-3 bg-[var(--color-bg)]">
       <button
         type="button"
-        className="flex-1 max-w-[480px] h-7 flex items-center gap-2 px-2.5 rounded-[--radius-sm] bg-[--color-surface-raised] border border-[--color-border] text-[--color-text-tertiary] hover:border-[--color-border-strong] transition-colors"
+        className="flex-1 max-w-[480px] h-7 flex items-center gap-2 px-2.5 rounded-[var(--radius-sm)] bg-[var(--color-surface-raised)] border border-[var(--color-border)] text-[var(--color-text-tertiary)] hover:border-[var(--color-border-strong)] transition-colors"
         // ⌘K opens command palette in a later plan; for now this is a no-op visual.
       >
         <Search className="w-3.5 h-3.5" strokeWidth={1.75} />
@@ -16,7 +16,7 @@ export function TopBar() {
           <KbdHint>K</KbdHint>
         </span>
       </button>
-      <div className="ml-auto text-[12px] text-[--color-text-tertiary]">
+      <div className="ml-auto text-[12px] text-[var(--color-text-tertiary)]">
         Aether Agency
       </div>
     </header>

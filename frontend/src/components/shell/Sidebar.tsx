@@ -21,12 +21,12 @@ const NAV = [
 
 export function Sidebar() {
   return (
-    <aside className="w-[200px] shrink-0 bg-[--color-surface] border-r border-[--color-border] flex flex-col">
+    <aside className="w-[200px] shrink-0 bg-[var(--color-surface)] border-r border-[var(--color-border)] flex flex-col">
       <div className="px-4 py-4 flex items-center gap-2">
-        <div className="w-6 h-6 rounded-md bg-[--color-accent] flex items-center justify-center">
+        <div className="w-6 h-6 rounded-md bg-[var(--color-accent)] flex items-center justify-center">
           <span className="text-[10px] font-bold text-[#0A0A0B]">P</span>
         </div>
-        <span className="font-semibold tracking-tight text-[--color-text-primary]">
+        <span className="font-semibold tracking-tight text-[var(--color-text-primary)]">
           PULSE
         </span>
       </div>
@@ -38,10 +38,10 @@ export function Sidebar() {
             to={to}
             className={({ isActive }) =>
               clsx(
-                "flex items-center gap-2.5 px-2.5 h-8 text-[13px] rounded-[--radius-sm] transition-colors",
+                "flex items-center gap-2.5 px-2.5 h-8 text-[13px] rounded-[var(--radius-sm)] transition-colors",
                 isActive
-                  ? "bg-[--color-accent-soft] text-[--color-accent]"
-                  : "text-[--color-text-secondary] hover:bg-[--color-surface-raised] hover:text-[--color-text-primary]",
+                  ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text-primary)]",
               )
             }
           >
@@ -51,15 +51,15 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="px-2 py-2 border-t border-[--color-border]">
+      <div className="px-2 py-2 border-t border-[var(--color-border)]">
         <NavLink
           to="/settings"
           className={({ isActive }) =>
             clsx(
-              "flex items-center gap-2.5 px-2.5 h-8 text-[13px] rounded-[--radius-sm] transition-colors",
+              "flex items-center gap-2.5 px-2.5 h-8 text-[13px] rounded-[var(--radius-sm)] transition-colors",
               isActive
-                ? "bg-[--color-accent-soft] text-[--color-accent]"
-                : "text-[--color-text-secondary] hover:bg-[--color-surface-raised] hover:text-[--color-text-primary]",
+                ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text-primary)]",
             )
           }
         >

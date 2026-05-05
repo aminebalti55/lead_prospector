@@ -16,9 +16,9 @@ const sizeClass: Record<NonNullable<Props["size"]>, string> = {
 };
 
 const toneClass: Record<NonNullable<Props["tone"]>, string> = {
-  default: "text-[--color-text-primary]",
-  accent: "text-[--color-accent]",
-  muted: "text-[--color-text-secondary]",
+  default: "text-[var(--color-text-primary)]",
+  accent: "text-[var(--color-accent)]",
+  muted: "text-[var(--color-text-secondary)]",
 };
 
 function format(usd: number, abbreviate: boolean): string {

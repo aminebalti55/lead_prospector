@@ -11,7 +11,7 @@ interface Props {
 function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[10px] uppercase tracking-wider text-[--color-text-tertiary] font-medium">
+      <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium">
         {label}
       </span>
       {children}
@@ -35,10 +35,10 @@ function FilterPill({
       type="button"
       onClick={onClick}
       className={clsx(
-        "w-full flex items-center justify-between px-2.5 h-7 rounded-[--radius-sm] text-[12px] transition-colors",
+        "w-full flex items-center justify-between px-2.5 h-7 rounded-[var(--radius-sm)] text-[12px] transition-colors",
         active
-          ? "bg-[--color-accent-soft] text-[--color-accent]"
-          : "text-[--color-text-secondary] hover:bg-[--color-surface-raised]",
+          ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)]",
       )}
     >
       <span>{label}</span>
@@ -51,7 +51,7 @@ function FilterPill({
 
 export function FilterPanel({ value, onChange, totalsByPriority, totalsByType }: Props) {
   return (
-    <div className="w-[200px] shrink-0 bg-[--color-surface] border-r border-[--color-border] p-3 flex flex-col gap-4 overflow-auto">
+    <div className="w-[200px] shrink-0 bg-[var(--color-surface)] border-r border-[var(--color-border)] p-3 flex flex-col gap-4 overflow-auto">
       <FilterRow label="Type">
         <FilterPill
           label="All"

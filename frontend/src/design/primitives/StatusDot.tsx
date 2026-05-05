@@ -1,0 +1,31 @@
+import clsx from "clsx";
+
+type Status = "live" | "idle" | "error" | "hot" | "warm" | "cold";
+
+interface Props {
+  status: Status;
+  className?: string;
+}
+
+const colorClass: Record<Status, string> = {
+  live: "bg-[--color-accent]",
+  idle: "bg-[--color-text-tertiary]",
+  error: "bg-[--color-hot]",
+  hot: "bg-[--color-hot]",
+  warm: "bg-[--color-warm]",
+  cold: "bg-[--color-cool]",
+};
+
+export function StatusDot({ status, className }: Props) {
+  const animate = status === "live" || status === "hot";
+  return (
+    <span
+      className={clsx(
+        "inline-block w-1.5 h-1.5 rounded-full",
+        colorClass[status],
+        animate && "animate-pulse-dot",
+        className,
+      )}
+    />
+  );
+}

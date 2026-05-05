@@ -103,14 +103,19 @@ def update_lead(
     if not path.exists():
         raise FileNotFoundError(filename)
 
-    # Migrate outreach status
+    # Migrate outreach status — accept any current Stage enum value, plus legacy aliases.
     if "Outreach_Status" in patch and patch["Outreach_Status"]:
+        from src.core.models import Stage
         status = patch["Outreach_Status"].lower().strip()
-        VALID = {"new", "queued", "contacted", "replied", "meeting", "converted", "passed"}
-        if status not in VALID:
-            patch["Outreach_Status"] = "new"
-        else:
+        # Legacy aliases the codebase has emitted historically:
+        _LEGACY_ALIASES = {"queued": Stage.NEW.value, "converted": Stage.WON.value, "passed": Stage.LOST.value}
+        valid_stages = {s.value for s in Stage}
+        if status in _LEGACY_ALIASES:
+            patch["Outreach_Status"] = _LEGACY_ALIASES[status]
+        elif status in valid_stages:
             patch["Outreach_Status"] = status
+        else:
+            patch["Outreach_Status"] = Stage.NEW.value
 
     with _EXCEL_LOCK:
         wb = load_workbook(path)

@@ -65,20 +65,37 @@ class ColdOutreachPipeline:
                 if progress_callback:
                     progress_callback(f"Scraping {niche} in {city}, {state}...")
 
-                # 1. Scrape from all sources
+                # 1. Scrape from all sources, across every keyword variant in
+                # the niche. Google/Yelp use category IDs internally so they
+                # only need one canonical pass; YP/BBB/Manta search by free
+                # text and benefit from each variant ("plumber" misses leads
+                # that "drain cleaning" or "pipe repair" find).
                 raw_leads: list[BusinessLead] = []
+                niche_keywords = settings.search.niches.get(niche, [niche]) or [niche]
+                category_sources = {"google_maps", "yelp"}
+
                 for name, cls in SCRAPER_CLASSES.items():
                     if name in skip:
                         continue
                     try:
                         scraper = cls(self.engine)
-                        keywords = settings.search.niches.get(niche, [niche])
-                        search_term = keywords[0] if keywords else niche
-                        leads = await scraper.search(
-                            search_term, city, state, max_results
+                        # Category-driven sources only need the canonical term once.
+                        terms = (
+                            niche_keywords[:1]
+                            if name in category_sources
+                            else niche_keywords
                         )
-                        raw_leads.extend(leads)
-                        logger.info(f"[{name}] Found {len(leads)} leads")
+                        # Per-keyword cap so a 6-variant niche doesn't blow past
+                        # max_results from a single source.
+                        per_term_cap = max(1, max_results // max(1, len(terms)))
+                        for search_term in terms:
+                            leads = await scraper.search(
+                                search_term, city, state, per_term_cap
+                            )
+                            raw_leads.extend(leads)
+                            logger.info(
+                                f"[{name}] '{search_term}' -> {len(leads)} leads"
+                            )
                     except Exception as e:
                         logger.error(f"[{name}] Scraper failed: {e}")
 

@@ -1,11 +1,24 @@
 import logging
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from src.core.models import DirectLead
 from src.core.scraper_engine import ScraperEngine
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_linkedin_session_params(url: str | None) -> str:
+    """Strip query string + fragment from a LinkedIn URL so the same job
+    yields a stable lead_id across sessions (sha1 dedup key is source|url).
+
+    Mirrors src/direct_leads/scrapers/tanit.py:_strip_session_params.
+    """
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
 
 # LinkedIn geoId mapping for country-based filtering
 LINKEDIN_GEO_IDS = {
@@ -90,7 +103,7 @@ class LinkedInJobsScraper:
                     source="linkedin",
                     title=title_el.get_all_text().strip(),
                     description=title_el.get_all_text().strip(),
-                    url=link_el.attrib.get("href", "") if link_el else "",
+                    url=_strip_linkedin_session_params(link_el.attrib.get("href", "") if link_el else ""),
                     company_name=company_el.get_all_text().strip() if company_el else None,
                     location=loc_el.get_all_text().strip() if loc_el else None,
                     posted_date=self._parse_time(date_el) if date_el else None,
@@ -122,7 +135,7 @@ class LinkedInJobsScraper:
                                 source="linkedin",
                                 title=title,
                                 description=title,
-                                url=href,
+                                url=_strip_linkedin_session_params(href),
                                 location="Unknown",
                             )
                         )

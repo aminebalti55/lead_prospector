@@ -1,4 +1,20 @@
+"""LinkedIn jobs scraper — guest API endpoint.
+
+LinkedIn's signed-in jobs page is auth-walled, but the platform exposes an
+unauthenticated guest endpoint for the public jobs listings:
+
+    GET /jobs-guest/jobs/api/seeMoreJobPostings/search
+        ?keywords=<kw>&location=<loc>&start=<n>
+
+It returns raw HTML containing `<li>` cards with title, company, location,
+URL, and posted-date — no auth, no Cloudflare, no captcha. This is the
+backend's primary path. Premium / authenticated searches go through the
+user's LinkedIn MCP in chat (results land in output/direct/ via Inbox).
+"""
+from __future__ import annotations
+
 import logging
+import re
 from datetime import datetime
 from urllib.parse import quote, urlparse
 
@@ -8,32 +24,51 @@ from src.core.scraper_engine import ScraperEngine
 logger = logging.getLogger(__name__)
 
 
-def _strip_linkedin_session_params(url: str | None) -> str:
-    """Strip query string + fragment from a LinkedIn URL so the same job
-    yields a stable lead_id across sessions (sha1 dedup key is source|url).
+GUEST_SEARCH_URL = (
+    "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+    "?keywords={kw}&location={loc}&start={start}"
+)
+RESULTS_PER_PAGE = 10
 
-    Mirrors src/direct_leads/scrapers/tanit.py:_strip_session_params.
-    """
+
+COUNTRY_LOCATION_HINTS = {
+    "TN": "Tunisia",
+    "US": "United States",
+    "GB": "United Kingdom",
+    "FR": "France",
+    "DE": "Germany",
+    "CA": "Canada",
+    "AU": "Australia",
+    "AE": "United Arab Emirates",
+    "SA": "Saudi Arabia",
+    "MA": "Morocco",
+    "DZ": "Algeria",
+}
+
+
+def _strip_linkedin_session_params(url: str | None) -> str:
     if not url:
         return ""
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
-# LinkedIn geoId mapping for country-based filtering
-LINKEDIN_GEO_IDS = {
-    "TN": "102134353",   # Tunisia
-    "US": "103644278",   # United States
-    "GB": "101165590",   # United Kingdom
-    "FR": "105015875",   # France
-    "DE": "101282230",   # Germany
-    "CA": "101174742",   # Canada
-    "AU": "101452733",   # Australia
-    "AE": "104305776",   # UAE
-    "SA": "100459316",   # Saudi Arabia
-    "MA": "102787409",   # Morocco
-    "DZ": "104029862",   # Algeria
-}
+def _job_id_from_url(url: str) -> str:
+    m = re.search(r"/jobs/view/[^/?]*?(\d{6,})", url)
+    return m.group(1) if m else ""
+
+
+def _parse_time(time_el) -> datetime | None:
+    try:
+        dt = time_el.attrib.get("datetime", "")
+    except Exception:
+        return None
+    if not dt:
+        return None
+    try:
+        return datetime.fromisoformat(dt.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 class LinkedInJobsScraper:
@@ -42,112 +77,108 @@ class LinkedInJobsScraper:
     def __init__(self, engine: ScraperEngine):
         self.engine = engine
 
-    async def search(self, keywords: list[str], max_results: int = 20, country: str = "") -> list[DirectLead]:
-        leads = []
+    async def search(
+        self,
+        keywords: list[str],
+        max_results: int = 20,
+        country: str = "",
+    ) -> list[DirectLead]:
+        if not keywords:
+            return []
+
+        location = COUNTRY_LOCATION_HINTS.get(country.upper(), "") if country else ""
+        all_leads: list[DirectLead] = []
+        seen_ids: set[str] = set()
+
         for kw in keywords[:3]:
-            # Use the keyword as-is — don't append "freelance contract" as it
-            # makes the query too narrow for small markets like Tunisia.
-            url = f"https://www.linkedin.com/jobs/search/?keywords={quote(kw)}&sortBy=DD"
-            # Add country/location filter if specified
-            geo_id = LINKEDIN_GEO_IDS.get(country.upper()) if country else None
-            if geo_id:
-                url += f"&location={quote(country)}&geoId={geo_id}"
-                logger.info(f"LinkedIn filtering by country: {country} (geoId={geo_id})")
-            try:
-                response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
-                if response:
-                    text = response.get_all_text().lower() if response else ""
-                    # Check for blocking or no results
-                    no_results = "couldn't find a match" in text or "couldn\u2019t find a match" in text
-                    if no_results:
-                        logger.info(f"LinkedIn: no results for '{kw}' — skipping")
-                        continue
-                    if "sign in" in text and "join now" in text and len(text) < 5000:
-                        logger.warning("LinkedIn blocked - trying Google fallback")
-                        leads.extend(
-                            await self._google_fallback(kw, max_results - len(leads))
-                        )
-                        continue
-                    new_leads = self._parse_results(response)
-                    leads.extend(new_leads)
-            except Exception as e:
-                logger.warning(f"LinkedIn search failed for '{kw}': {e}")
-                leads.extend(await self._google_fallback(kw, max_results - len(leads)))
-            if len(leads) >= max_results:
+            remaining = max_results - len(all_leads)
+            if remaining <= 0:
                 break
-        return leads[:max_results]
+            pages_needed = max(1, (remaining + RESULTS_PER_PAGE - 1) // RESULTS_PER_PAGE)
+            for page in range(pages_needed):
+                start = page * RESULTS_PER_PAGE
+                url = GUEST_SEARCH_URL.format(
+                    kw=quote(kw),
+                    loc=quote(location),
+                    start=start,
+                )
+                try:
+                    await self.engine.rate_limiter.wait_async(self.SOURCE_NAME)
+                    self.engine.rate_limiter.record_request(self.SOURCE_NAME)
+                    response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
+                    if not response:
+                        break
+                    page_leads = self._parse_cards(response)
+                    if not page_leads:
+                        break
+                    new_count = 0
+                    for lead in page_leads:
+                        key = _job_id_from_url(lead.url) or lead.url
+                        if not key or key in seen_ids:
+                            continue
+                        seen_ids.add(key)
+                        all_leads.append(lead)
+                        new_count += 1
+                        if len(all_leads) >= max_results:
+                            break
+                    if new_count == 0:
+                        break
+                except Exception as e:
+                    logger.warning(f"[linkedin] search failed for '{kw}' page {page}: {e}")
+                    break
+                if len(all_leads) >= max_results:
+                    break
 
-    @staticmethod
-    def _first(elements):
-        """Get first element from css() result list, or None."""
-        return elements[0] if elements else None
+        return all_leads[:max_results]
 
-    def _parse_results(self, page) -> list[DirectLead]:
-        leads = []
-        cards = (
-            page.css("div.base-card")
-            or page.css("li.result-card")
-            or page.css("div.job-search-card")
-        )
-        for card in (cards or []):
+    def _parse_cards(self, response) -> list[DirectLead]:
+        leads: list[DirectLead] = []
+        try:
+            cards = response.css("li")
+        except Exception:
+            return []
+
+        for card in cards:
             try:
                 title_el = self._first(card.css("h3.base-search-card__title")) or self._first(card.css("h3"))
                 if not title_el:
                     continue
-                link_el = self._first(card.css("a.base-card__full-link")) or self._first(card.css("a"))
-                company_el = self._first(card.css("h4.base-search-card__subtitle")) or self._first(card.css("a.hidden-nested-link"))
-                loc_el = self._first(card.css("span.job-search-card__location"))
-                date_el = self._first(card.css("time"))
+                title = title_el.get_all_text().strip()
+                if not title:
+                    continue
 
-                lead = DirectLead(
-                    source="linkedin",
-                    title=title_el.get_all_text().strip(),
-                    description=title_el.get_all_text().strip(),
-                    url=_strip_linkedin_session_params(link_el.attrib.get("href", "") if link_el else ""),
-                    company_name=company_el.get_all_text().strip() if company_el else None,
-                    location=loc_el.get_all_text().strip() if loc_el else None,
-                    posted_date=self._parse_time(date_el) if date_el else None,
+                link_el = self._first(card.css("a.base-card__full-link")) or self._first(card.css("a"))
+                href = link_el.attrib.get("href", "") if link_el else ""
+                stable_url = _strip_linkedin_session_params(href)
+                if not _job_id_from_url(stable_url):
+                    continue  # Skip cards without a stable job id
+
+                company_el = (
+                    self._first(card.css("h4.base-search-card__subtitle"))
+                    or self._first(card.css("h4"))
                 )
-                leads.append(lead)
+                company = company_el.get_all_text().strip() if company_el else ""
+
+                loc_el = self._first(card.css("span.job-search-card__location"))
+                location = loc_el.get_all_text().strip() if loc_el else ""
+
+                date_el = self._first(card.css("time"))
+                posted_date = _parse_time(date_el) if date_el else None
+
+                leads.append(DirectLead(
+                    source="linkedin",
+                    title=title,
+                    description=title,
+                    url=stable_url,
+                    company_name=company,
+                    location=location,
+                    posted_date=posted_date,
+                ))
             except Exception as e:
-                logger.debug(f"Failed to parse LinkedIn card: {e}")
+                logger.debug(f"[linkedin] card parse error: {e}")
                 continue
         return leads
 
-    async def _google_fallback(self, keyword: str, max_results: int) -> list[DirectLead]:
-        """Fallback: search Google for LinkedIn job listings."""
-        query = f'site:linkedin.com/jobs "{keyword}" "freelance" OR "contract"'
-        url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-        try:
-            response = await self.engine.async_fetch_with_retry(
-                url, "google_maps"
-            )  # use stealth for Google
-            if not response:
-                return []
-            leads = []
-            for link in response.css("a"):
-                href = link.attrib.get("href", "")
-                if "linkedin.com/jobs" in href:
-                    title = link.get_all_text().strip()
-                    if title:
-                        leads.append(
-                            DirectLead(
-                                source="linkedin",
-                                title=title,
-                                description=title,
-                                url=_strip_linkedin_session_params(href),
-                                location="Unknown",
-                            )
-                        )
-            return leads[:max_results]
-        except Exception:
-            return []
-
-    def _parse_time(self, time_el) -> datetime | None:
-        dt = time_el.attrib.get("datetime", "")
-        if dt:
-            try:
-                return datetime.fromisoformat(dt.replace("Z", "+00:00"))
-            except Exception:
-                pass
-        return None
+    @staticmethod
+    def _first(elements):
+        return elements[0] if elements else None

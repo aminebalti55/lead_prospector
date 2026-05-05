@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime as _dt
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -15,6 +16,17 @@ from backend.services.opportunity_aggregator import (
 )
 
 router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
+
+
+def _parse_iso(value: object) -> Optional[_dt]:
+    if not value:
+        return None
+    if isinstance(value, _dt):
+        return value
+    try:
+        return _dt.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
 
 class StagePatch(BaseModel):
@@ -50,6 +62,7 @@ def _load_all_opportunities() -> list[dict]:
                 title=row.get("Title") or "",
                 description=row.get("Description") or "",
                 url=row.get("URL") or "",
+                posted_date=_parse_iso(row.get("Posted_Date")),
                 company_name=row.get("Company") or "",
                 company_website=row.get("Company_Website") or "",
                 location=row.get("Location") or "",

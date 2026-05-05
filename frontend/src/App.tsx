@@ -1,25 +1,14 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AppLayout } from "./layouts/AppLayout";
 import { AppShell } from "./components/shell/AppShell";
 import { InboxPage } from "./pages/inbox/InboxPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { HubPage } from "./pages/hub/HubPage";
 import { PipelinePage } from "./pages/pipeline/PipelinePage";
 import { SourcesPage } from "./pages/sources/SourcesPage";
-
-import { ColdDashboard } from "./pages/cold/Dashboard";
-import { ColdLeads } from "./pages/cold/Leads";
-import { ColdRuns } from "./pages/cold/Runs";
-import { NewColdRun } from "./pages/cold/NewRun";
-import { ColdEmail } from "./pages/cold/Email";
-import { DirectDashboard } from "./pages/direct/Dashboard";
-import { DirectLeads } from "./pages/direct/Leads";
-import { DirectScans } from "./pages/direct/Scans";
-import { NewDirectScan } from "./pages/direct/NewScan";
-import { SavedSearches } from "./pages/direct/SavedSearches";
-import { DirectLeadDetail } from "./pages/direct/LeadDetail";
-import { SettingsPage } from "./pages/Settings";
+import { SettingsPage } from "./pages/settings/SettingsPage";
+import { TemplatesPage } from "./pages/templates/TemplatesPage";
+import { OutreachPage } from "./pages/outreach/OutreachPage";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30000, refetchOnWindowFocus: false } },
@@ -36,24 +25,9 @@ export default function App() {
             <Route path="/hub" element={<HubPage />} />
             <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/sources" element={<SourcesPage />} />
-            <Route path="/outreach" element={<PlaceholderPage title="Outreach" shipping="Plan 5 — Outreach revamp" />} />
-            <Route path="/templates" element={<PlaceholderPage title="Templates" shipping="Plan 5 — Templates" />} />
-            <Route path="/settings" element={<PlaceholderPage title="Settings" shipping="Plan 5 — Settings round-trip" />} />
-          </Route>
-          <Route element={<AppLayout />}>
-            {/* Cold Outreach */}
-            <Route path="/cold/dashboard" element={<ColdDashboard />} />
-            <Route path="/cold/leads" element={<ColdLeads />} />
-            <Route path="/cold/runs" element={<ColdRuns />} />
-            <Route path="/cold/runs/new" element={<NewColdRun />} />
-            <Route path="/cold/email" element={<ColdEmail />} />
-            {/* Direct Leads */}
-            <Route path="/direct/dashboard" element={<DirectDashboard />} />
-            <Route path="/direct/leads" element={<DirectLeads />} />
-            <Route path="/direct/leads/:leadId" element={<DirectLeadDetail />} />
-            <Route path="/direct/scans" element={<DirectScans />} />
-            <Route path="/direct/scans/new" element={<NewDirectScan />} />
-            <Route path="/direct/saved-searches" element={<SavedSearches />} />
+            <Route path="/outreach" element={<OutreachPage />} />
+            <Route path="/templates" element={<TemplatesPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

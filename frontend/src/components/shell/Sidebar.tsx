@@ -67,6 +67,16 @@ export function Sidebar() {
           <span>Settings</span>
         </NavLink>
       </div>
+
+      <div className="px-3 py-3 border-t border-[var(--color-border)] flex items-center gap-2.5">
+        <div className="w-7 h-7 rounded-full bg-[var(--color-surface-raised)] border border-[var(--color-border)] flex items-center justify-center">
+          <span className="text-[10px] font-medium text-[var(--color-text-secondary)] tracking-wider">AA</span>
+        </div>
+        <div className="flex flex-col leading-tight min-w-0">
+          <span className="text-[12px] text-[var(--color-text-primary)] truncate">Aether Agency</span>
+          <span className="text-[10px] text-[var(--color-text-tertiary)]">Workspace</span>
+        </div>
+      </div>
     </aside>
   );
 }

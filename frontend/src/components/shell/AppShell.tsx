@@ -1,6 +1,7 @@
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
+import { PulseBar } from "./PulseBar";
 
 export function AppShell() {
   return (
@@ -11,7 +12,7 @@ export function AppShell() {
         <main className="flex-1 overflow-auto">
           <Outlet />
         </main>
-        {/* Pulse Bar mounts here in Plan 2 */}
+        <PulseBar />
       </div>
     </div>
   );

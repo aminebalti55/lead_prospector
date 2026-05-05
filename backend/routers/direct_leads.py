@@ -63,7 +63,7 @@ async def create_scan(body: dict):
         "max_results": body.get("max_results", 50),
         "progress": 0,
         "leads_found": 0,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.utcnow().isoformat() + "Z",
         "started_at": None,
         "finished_at": None,
         "error": None,
@@ -102,13 +102,19 @@ async def list_scans():
 async def _execute_scan(scan_id: str, params: dict) -> None:
     """Run the direct leads scan using the real pipeline."""
     sources = params.get("sources", [])
+    # If no sources specified, default to the full known list so the scan record
+    # is linkable in the PulseBar.
+    if not sources:
+        sources = ["reddit", "linkedin", "linkedin_posts", "indeed", "twitter", "clutch", "goodfirms"]
+        # Persist the resolved list back to the scan record so PulseBar can use it
+        _update_scan(scan_id, {"sources": sources})
     source_configs = params.get("source_configs", {})
     keywords = params.get("keywords", [])
     max_results = params.get("max_results", 50)
 
     _update_scan(scan_id, {
         "status": "running",
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": datetime.utcnow().isoformat() + "Z",
         "progress": 10,
         "logs": ["Initializing pipeline..."],
     })
@@ -151,7 +157,7 @@ async def _execute_scan(scan_id: str, params: dict) -> None:
             "progress": 100,
             "leads_found": total_leads,
             "output_files": [Path(f).name for f in output_files],
-            "finished_at": datetime.utcnow().isoformat(),
+            "finished_at": datetime.utcnow().isoformat() + "Z",
             "logs": [f"Done — {total_leads} leads found across {len(output_files)} file(s)."],
         })
         logger.info(f"[SCAN {scan_id}] Completed: {total_leads} leads")
@@ -161,7 +167,7 @@ async def _execute_scan(scan_id: str, params: dict) -> None:
         _update_scan(scan_id, {
             "status": "failed",
             "error": str(e),
-            "finished_at": datetime.utcnow().isoformat(),
+            "finished_at": datetime.utcnow().isoformat() + "Z",
             "logs": [f"Error: {e}"],
         })
 

@@ -51,7 +51,7 @@ class GoogleMapsScraper:
         url = f"{self.BASE_URL}/{quote_plus(query)}?hl=en"
         logger.info(f"Searching Google Maps: {query}")
 
-        response = self.engine.fetch_with_retry(url, self.SOURCE_NAME)
+        response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
         if response is None:
             return []
 
@@ -228,8 +228,8 @@ class GoogleMapsScraper:
 
         try:
             # Use stealth fetcher for detail pages (lighter than dynamic)
-            response = self.engine.fetch_with_retry(
-                lead.detail_url, "yelp"  # uses stealth fetcher
+            response = await self.engine.async_fetch_with_retry(
+                lead.detail_url, self.SOURCE_NAME
             )
             if response is None:
                 return lead

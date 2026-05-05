@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -117,14 +116,35 @@ class Scheduler:
         if changed:
             scans_file.write_text(json.dumps(data, indent=2))
 
-    @staticmethod
-    def _parse_frequency(freq: str) -> float:
-        freq = freq.lower()
-        if "hour" in freq:
-            match = re.search(r"(\d+)", freq)
-            return float(match.group(1)) if match else 6
-        if freq == "daily":
+    def _parse_frequency(self, raw: str) -> int:
+        """Parse a frequency string to hours. Case-insensitive.
+
+        Supported:
+          - hourly         → 1
+          - Nhours         → N (e.g. '6hours' → 6)
+          - daily          → 24
+          - weekly         → 168
+          - biweekly       → 336
+          - monthly        → 720 (≈30 days, intentional approximation)
+        Unknown values default to 24 (daily).
+        """
+        if not raw:
             return 24
-        if freq == "weekly":
+        s = raw.lower().strip()
+        if s == "hourly":
+            return 1
+        if s == "daily":
+            return 24
+        if s == "weekly":
             return 168
-        return 24  # default daily
+        if s == "biweekly":
+            return 336
+        if s == "monthly":
+            return 720
+        # Nhours shorthand
+        if s.endswith("hours"):
+            try:
+                return int(s[:-5])
+            except ValueError:
+                return 24
+        return 24

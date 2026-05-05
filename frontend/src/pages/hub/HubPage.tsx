@@ -12,7 +12,7 @@ export function HubPage() {
   const responseRate = stats?.response_rate ?? 0;
 
   return (
-    <div className="p-6 flex flex-col gap-4 max-w-[1400px] mx-auto w-full">
+    <div className="p-6 flex flex-col gap-4 w-full">
       {/* Hero row: 1 big + 3 small */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
         <div className="lg:col-span-2">

@@ -276,6 +276,10 @@ class DirectLeadSettings(BaseSettings):
     your_hourly_rate: int = Field(default=75)
     your_min_budget: int = Field(default=500)
 
+    # Drop hiring-type leads older than this. Stale job posts never convert.
+    # Agencies (GoodFirms/Clutch) are not date-sensitive and bypass this.
+    max_age_days: int = Field(default=30)
+
     class Config:
         extra = "ignore"
 

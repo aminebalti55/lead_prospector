@@ -135,7 +135,8 @@ class IndeedScraper:
 
         for kw in keywords[:5]:
             query = f"{kw} freelance OR contract"
-            url = f"https://{domain}/jobs?q={query.replace(' ', '+')}&sort=date&limit=25"
+            # fromage=14 limits to jobs posted in the last 14 days.
+            url = f"https://{domain}/jobs?q={query.replace(' ', '+')}&sort=date&fromage=14&limit=25"
             try:
                 await self.engine.rate_limiter.wait_async(self.SOURCE_NAME)
                 self.engine.rate_limiter.record_request(self.SOURCE_NAME)

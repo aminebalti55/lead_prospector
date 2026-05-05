@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 GUEST_SEARCH_URL = (
     "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
     "?keywords={kw}&location={loc}&start={start}"
+    # f_TPR=r1209600 → posted in the last 14 days (in seconds).
+    "&f_TPR=r1209600"
 )
 RESULTS_PER_PAGE = 10
 

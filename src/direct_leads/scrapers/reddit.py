@@ -79,9 +79,11 @@ class RedditScraper:
 
         for subreddit in SUBREDDITS:
             for kw in keywords[:3]:
+                # `t=month` limits results to posts from the last 30 days.
+                # Reddit's t= options: hour/day/week/month/year/all.
                 url = (
                     f"https://www.reddit.com/r/{subreddit}/search.json"
-                    f"?q={quote_plus(kw)}&restrict_sr=1&sort=new&limit=25"
+                    f"?q={quote_plus(kw)}&restrict_sr=1&sort=new&t=month&limit=25"
                 )
                 try:
                     await self.engine.rate_limiter.wait_async(self.SOURCE_NAME)

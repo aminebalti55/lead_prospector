@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
 
@@ -85,6 +85,11 @@ class DirectLeadsPipeline:
         unique = self._deduplicate(all_leads, existing_urls)
         logger.info(f"Unique leads after dedup: {len(unique)}")
 
+        # 2b. Drop stale hiring posts. Agencies (GoodFirms/Clutch) have no
+        # posted_date and aren't time-sensitive — they pass through.
+        unique = self._filter_recent(unique)
+        logger.info(f"Leads after recency filter: {len(unique)}")
+
         # 3. Score with matcher
         for lead in unique:
             hours_ago = None
@@ -124,6 +129,29 @@ class DirectLeadsPipeline:
                 seen.add(lead.url)
                 unique.append(lead)
         return unique
+
+    def _filter_recent(self, leads: list[DirectLead]) -> list[DirectLead]:
+        """Drop hiring leads older than max_age_days. Agency leads (no
+        posted_date) pass through untouched."""
+        max_age = int(getattr(settings.direct_leads, "max_age_days", 30) or 30)
+        cutoff = datetime.now() - timedelta(days=max_age)
+        kept: list[DirectLead] = []
+        dropped = 0
+        for lead in leads:
+            posted = lead.posted_date
+            # Agency listings carry no posted_date — keep them.
+            if posted is None:
+                kept.append(lead)
+                continue
+            # Strip tz so naive/aware comparison stays consistent with cutoff.
+            posted_naive = posted.replace(tzinfo=None) if posted.tzinfo else posted
+            if posted_naive >= cutoff:
+                kept.append(lead)
+            else:
+                dropped += 1
+        if dropped:
+            logger.info(f"Dropped {dropped} stale leads (>{max_age}d old)")
+        return kept
 
     def _detect_budget(self, text: str) -> str | None:
         import re

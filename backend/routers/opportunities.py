@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime as _dt
+from datetime import datetime as _dt, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from src.core.storage import list_files, read_leads, update_lead
 from src.core.models import DirectLead, Stage
+from src.core.config import settings
 from backend.services.opportunity_aggregator import (
     cold_row_to_opportunity,
     direct_lead_to_opportunity,
@@ -85,6 +86,18 @@ def _load_all_opportunities() -> list[dict]:
             # have an explicit Lead_ID in the row, prefer it (handles legacy data).
             if row.get("Lead_ID"):
                 lead.lead_id = str(row["Lead_ID"])
+
+            # Drop stale hiring posts on read so historical Excel files don't
+            # surface 7-month-old leads in the inbox. Agencies (no posted_date)
+            # bypass this — they're not time-sensitive.
+            if lead.lead_subtype != "agency" and lead.posted_date is not None:
+                max_age = int(getattr(settings.direct_leads, "max_age_days", 30) or 30)
+                cutoff = _dt.now() - timedelta(days=max_age)
+                posted = lead.posted_date
+                posted_naive = posted.replace(tzinfo=None) if posted.tzinfo else posted
+                if posted_naive < cutoff:
+                    continue
+
             opp = direct_lead_to_opportunity(lead, source_file=f["name"])
             if opp.id:
                 out.append(asdict(opp))

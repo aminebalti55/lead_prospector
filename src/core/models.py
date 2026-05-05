@@ -245,3 +245,52 @@ class DirectLead:
     def __post_init__(self) -> None:
         raw = f"{self.source}|{self.url}"
         self.lead_id = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Opportunity (unified shape for the Pulse UI)
+# ---------------------------------------------------------------------------
+
+
+class Stage(str, Enum):
+    NEW = "new"
+    RESEARCHING = "researching"
+    CONTACTED = "contacted"
+    REPLIED = "replied"
+    MEETING = "meeting"
+    WON = "won"
+    LOST = "lost"
+
+
+class OpportunityType(str, Enum):
+    DIRECT = "direct"  # job/gig from Reddit/LinkedIn/Indeed/Twitter/Clutch/GoodFirms
+    COLD = "cold"      # local business prospect from Google Maps/Yelp/BBB/YellowPages/Manta
+
+
+@dataclass
+class Opportunity:
+    """Unified opportunity used by the new Pulse UI. Read-only projection
+    over ProcessedLead (cold) and DirectLead (direct)."""
+
+    id: str
+    type: str          # OpportunityType value
+    source: str        # "reddit" | "linkedin" | "google_maps" | ...
+    title: str
+    description: str
+    url: str
+    posted_date: Optional[str] = None  # ISO date string
+    company_name: str = ""
+    location: str = ""
+    contact_email: str = ""
+    contact_phone: str = ""
+    score: int = 0                  # 0-100, normalized
+    priority: str = "cold"          # "hot" | "warm" | "cold"
+    stage: str = Stage.NEW.value
+    estimated_value_usd: int = 0    # heuristic dollar estimate
+    matched_skills: List[str] = field(default_factory=list)
+    budget_signal: str = ""
+    urgency_signal: str = ""
+    pain_tags: List[str] = field(default_factory=list)
+    notes: str = ""
+    source_file: str = ""           # which Excel file this came from (for write-back)
+    raw_lead_id: str = ""           # original Lead_ID in the source file

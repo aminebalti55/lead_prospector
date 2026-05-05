@@ -16,12 +16,19 @@ class GoodFirmsScraper:
         self.engine = engine
 
     async def search(self, keywords: list[str], max_results: int = 20) -> list[DirectLead]:
-        """Search goodfirms.co for project listings matching keywords."""
+        """Search goodfirms.co for project listings matching keywords.
+
+        NOTE (May 2026): Known URLs are returning 404 on the live site
+        (e.g. /projects, /companies, /directory/...). URL discovery is a
+        separate research task. This scraper will return 0 results until
+        valid URLs are identified. Structural fixes (async fetch, get_all_text)
+        are applied so the scraper won't silently throw when URLs are restored.
+        """
         leads: list[DirectLead] = []
         for kw in keywords[:5]:
             try:
                 url = f"{BASE_URL}/projects?q={quote_plus(kw)}"
-                response = self.engine.fetch(url, self.SOURCE_NAME)
+                response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
                 if not response:
                     continue
 
@@ -37,7 +44,7 @@ class GoodFirmsScraper:
                         company_name = ""
                         detail_url = ""
                         if name_el:
-                            company_name = name_el[0].text.strip() if name_el[0].text else ""
+                            company_name = name_el[0].get_all_text().strip()
                             href = name_el[0].attrib.get("href", "")
                             detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
 
@@ -45,13 +52,13 @@ class GoodFirmsScraper:
                         desc_el = card.css("p.firm-desc") or card.css("div.company-description")
                         description = ""
                         if desc_el:
-                            description = desc_el[0].text.strip() if desc_el[0].text else ""
+                            description = desc_el[0].get_all_text().strip()
 
                         # Location
                         loc_el = card.css("span.firm-location") or card.css("span.location")
                         location = ""
                         if loc_el:
-                            location = loc_el[0].text.strip() if loc_el[0].text else ""
+                            location = loc_el[0].get_all_text().strip()
 
                         if not company_name:
                             continue

@@ -16,45 +16,43 @@ class ClutchScraper:
         self.engine = engine
 
     async def search(self, keywords: list[str], max_results: int = 20) -> list[DirectLead]:
-        """Search clutch.co for project listings matching keywords."""
+        """Search clutch.co for software development companies matching keywords.
+
+        Selectors verified live May 2026:
+        - Card: div.provider-row (~80/page)
+        - Title: .provider__title
+        - Description: .provider__description
+        - Profile link: a.directory_profile (href relative to BASE_URL)
+        """
         leads: list[DirectLead] = []
         for kw in keywords[:5]:
             try:
                 url = f"{BASE_URL}/developers?query={quote_plus(kw)}"
-                response = self.engine.fetch(url, self.SOURCE_NAME)
+                response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
                 if not response:
                     continue
 
-                # Parse company/project cards from the listing page
-                cards = response.css("li.provider-row") or response.css("div.provider-row")
+                cards = response.css("div.provider-row")
                 if not cards:
-                    cards = response.css("ul.providers-list li") or []
+                    logger.debug(f"Clutch returned no provider-row cards for '{kw}'")
+                    continue
 
                 for card in cards:
                     try:
-                        # Company name
-                        name_el = card.css("h3.company_info a") or card.css("a.company_name")
-                        company_name = ""
-                        detail_url = ""
-                        if name_el:
-                            company_name = name_el[0].text.strip() if name_el[0].text else ""
-                            href = name_el[0].attrib.get("href", "")
-                            detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
-
-                        # Tagline / description
-                        tagline_el = card.css("p.company_info__wrap") or card.css("div.provider-info__description")
-                        description = ""
-                        if tagline_el:
-                            description = tagline_el[0].text.strip() if tagline_el[0].text else ""
-
-                        # Location
-                        loc_el = card.css("span.locality") or card.css("span.provider-info__location")
-                        location = ""
-                        if loc_el:
-                            location = loc_el[0].text.strip() if loc_el[0].text else ""
-
+                        title_el = card.css(".provider__title")
+                        company_name = title_el[0].get_all_text().strip() if title_el else ""
+                        if not company_name:
+                            # Fall back to data-title attribute on the card itself
+                            company_name = card.attrib.get("data-title", "").strip()
                         if not company_name:
                             continue
+
+                        desc_el = card.css(".provider__description")
+                        description = desc_el[0].get_all_text().strip() if desc_el else ""
+
+                        profile_link = card.css("a.directory_profile")
+                        href = profile_link[0].attrib.get("href", "") if profile_link else ""
+                        detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
 
                         lead = DirectLead(
                             source="clutch",
@@ -62,7 +60,6 @@ class ClutchScraper:
                             description=description[:2000],
                             url=detail_url,
                             company_name=company_name,
-                            location=location,
                         )
                         leads.append(lead)
                     except Exception as e:

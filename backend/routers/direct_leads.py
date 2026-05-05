@@ -105,7 +105,7 @@ async def _execute_scan(scan_id: str, params: dict) -> None:
     # If no sources specified, default to the full known list so the scan record
     # is linkable in the PulseBar.
     if not sources:
-        sources = ["reddit", "linkedin", "linkedin_posts", "indeed", "twitter", "clutch", "goodfirms"]
+        sources = ["reddit", "linkedin", "linkedin_posts", "indeed", "twitter", "clutch", "goodfirms", "tanit", "remoteok"]
         # Persist the resolved list back to the scan record so PulseBar can use it
         _update_scan(scan_id, {"sources": sources})
     source_configs = params.get("source_configs", {})
@@ -279,7 +279,7 @@ async def run_saved_search_now(search_id: str):
     if not keywords:
         raise HTTPException(status_code=400, detail="Saved search has no keywords")
     if not sources:
-        sources = ["reddit", "linkedin", "linkedin_posts", "indeed", "twitter", "clutch", "goodfirms"]
+        sources = ["reddit", "linkedin", "linkedin_posts", "indeed", "twitter", "clutch", "goodfirms", "tanit", "remoteok"]
 
     scan = {
         "id": scan_id,

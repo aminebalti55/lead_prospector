@@ -17,6 +17,7 @@ from src.direct_leads.scrapers.goodfirms import GoodFirmsScraper
 from src.direct_leads.scrapers.twitter import TwitterScraper
 from src.direct_leads.scrapers.linkedin_posts import LinkedInPostsScraper
 from src.direct_leads.scrapers.tanit import TanitScraper
+from src.direct_leads.scrapers.remoteok import RemoteOKScraper
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ SCRAPER_CLASSES = {
     "goodfirms": GoodFirmsScraper,
     "twitter": TwitterScraper,
     "tanit": TanitScraper,
+    "remoteok": RemoteOKScraper,
 }
 
 

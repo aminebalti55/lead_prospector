@@ -51,28 +51,33 @@ class DirectLeadsPipeline:
         existing_urls = get_existing_direct_lead_urls()
         source_configs = source_configs or {}
 
-        # 1. Scrape from selected sources
-        all_leads: list[DirectLead] = []
-        for source_name in active_sources:
+        # 1. Scrape from selected sources concurrently (bounded by semaphore)
+        import asyncio
+        max_concurrent = max(1, int(getattr(settings.scraping, "max_concurrent_scrapers", 3) or 3))
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _run_one(source_name: str) -> list[DirectLead]:
             if source_name not in SCRAPER_CLASSES:
                 logger.warning(f"Unknown source: {source_name}")
-                continue
+                return []
+            async with sem:
+                if progress_callback:
+                    progress_callback(f"Scanning {source_name}...")
+                try:
+                    scraper = SCRAPER_CLASSES[source_name](self.engine)
+                    config = source_configs.get(source_name, {})
+                    search_kwargs = {"keywords": keywords, "max_results": max_results}
+                    if config.get("country"):
+                        search_kwargs["country"] = config["country"]
+                    leads = await scraper.search(**search_kwargs)
+                    logger.info(f"[{source_name}] Found {len(leads)} leads")
+                    return leads
+                except Exception as e:
+                    logger.error(f"[{source_name}] Scraper failed: {e}")
+                    return []
 
-            if progress_callback:
-                progress_callback(f"Scanning {source_name}...")
-
-            try:
-                scraper = SCRAPER_CLASSES[source_name](self.engine)
-                # Pass source-specific config (e.g. country) if scraper supports it
-                config = source_configs.get(source_name, {})
-                search_kwargs = {"keywords": keywords, "max_results": max_results}
-                if config.get("country"):
-                    search_kwargs["country"] = config["country"]
-                leads = await scraper.search(**search_kwargs)
-                all_leads.extend(leads)
-                logger.info(f"[{source_name}] Found {len(leads)} leads")
-            except Exception as e:
-                logger.error(f"[{source_name}] Scraper failed: {e}")
+        results = await asyncio.gather(*[_run_one(s) for s in active_sources])
+        all_leads: list[DirectLead] = [lead for batch in results for lead in batch]
 
         # 2. Deduplicate
         unique = self._deduplicate(all_leads, existing_urls)

@@ -41,9 +41,31 @@ export function useUpdateStage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stage }),
       }),
-    onSuccess: (_data, { id }) => {
+    // Optimistic: snapshot every active opportunities query, mutate the matching opp's stage in place.
+    onMutate: async ({ id, stage }) => {
+      await qc.cancelQueries({ queryKey: ["opportunities"] });
+      const snapshots = qc.getQueriesData<OpportunityListResponse>({ queryKey: ["opportunities"] });
+      snapshots.forEach(([key, data]) => {
+        if (!data) return;
+        const next: OpportunityListResponse = {
+          ...data,
+          opportunities: data.opportunities.map((o) =>
+            o.id === id ? { ...o, stage } : o,
+          ),
+        };
+        qc.setQueryData(key, next);
+      });
+      return { snapshots };
+    },
+    onError: (_err, _vars, context) => {
+      // Roll back on failure
+      context?.snapshots.forEach(([key, data]) => qc.setQueryData(key, data));
+      console.error("Stage update failed; rolled back optimistic change");
+    },
+    onSettled: (_data, _err, { id }) => {
       qc.invalidateQueries({ queryKey: ["opportunities"] });
       qc.invalidateQueries({ queryKey: ["opportunity", id] });
+      qc.invalidateQueries({ queryKey: ["hub"] });
     },
   });
 }

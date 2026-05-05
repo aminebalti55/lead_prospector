@@ -263,3 +263,47 @@ async def delete_saved_search(search_id: str):
         raise HTTPException(status_code=404, detail="Saved search not found")
     _save_searches(searches)
     return {"ok": True}
+
+
+@router.post("/saved-searches/{search_id}/run")
+async def run_saved_search_now(search_id: str):
+    """Trigger an immediate scan from a saved search's keywords/sources."""
+    searches = _load_searches()
+    search = next((s for s in searches if s["id"] == search_id), None)
+    if not search:
+        raise HTTPException(status_code=404, detail="Saved search not found")
+
+    scan_id = uuid.uuid4().hex[:8]
+    sources = search.get("sources") or []
+    keywords = search.get("keywords") or []
+    if not keywords:
+        raise HTTPException(status_code=400, detail="Saved search has no keywords")
+    if not sources:
+        sources = ["reddit", "linkedin", "linkedin_posts", "indeed", "twitter", "clutch", "goodfirms"]
+
+    scan = {
+        "id": scan_id,
+        "status": "queued",
+        "sources": sources,
+        "source_configs": search.get("source_configs", {}),
+        "keywords": keywords,
+        "max_results": int(search.get("max_results") or 50),
+        "progress": 0,
+        "leads_found": 0,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "started_at": None,
+        "finished_at": None,
+        "error": None,
+        "logs": [],
+    }
+    scans = _load_scans()
+    scans.insert(0, scan)
+    _save_scans(scans)
+
+    asyncio.create_task(_execute_scan(scan_id, {
+        "sources": sources,
+        "keywords": keywords,
+        "max_results": int(search.get("max_results") or 50),
+        "source_configs": search.get("source_configs", {}),
+    }))
+    return {"scan_id": scan_id, "status": "queued"}

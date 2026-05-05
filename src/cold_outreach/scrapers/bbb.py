@@ -53,7 +53,7 @@ class BBBScraper:
                 "page": page_num,
             }
             url = f"{self.BASE_URL}?{urlencode(params)}"
-            response = self.engine.fetch_with_retry(url, self.SOURCE_NAME)
+            response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
             if response is None:
                 break
 

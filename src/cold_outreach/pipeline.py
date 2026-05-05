@@ -85,12 +85,11 @@ class ColdOutreachPipeline:
                             if name in category_sources
                             else niche_keywords
                         )
-                        # Per-keyword cap so a 6-variant niche doesn't blow past
-                        # max_results from a single source.
-                        per_term_cap = max(1, max_results // max(1, len(terms)))
+                        # Each keyword gets full max_results breadth; dedup
+                        # collapses overlaps across variants.
                         for search_term in terms:
                             leads = await scraper.search(
-                                search_term, city, state, per_term_cap
+                                search_term, city, state, max_results
                             )
                             raw_leads.extend(leads)
                             logger.info(

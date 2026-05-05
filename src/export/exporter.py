@@ -161,7 +161,9 @@ class LeadExporter:
 
             # Auto-adjust column widths
             for idx, col in enumerate(df.columns):
-                max_length = max(df[col].astype(str).map(len).max(), len(col))
+                # str.len() handles NaN cleanly; map(len) trips on float NaN.
+                col_max = df[col].astype(str).str.len().max()
+                max_length = max(int(col_max) if col_max == col_max else 0, len(col))
                 # Cap width at 50
                 adjusted_width = min(max_length + 2, 50)
                 worksheet.column_dimensions[

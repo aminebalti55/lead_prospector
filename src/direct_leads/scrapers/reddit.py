@@ -7,7 +7,14 @@ from src.core.scraper_engine import ScraperEngine
 
 logger = logging.getLogger(__name__)
 
-SUBREDDITS = ["forhire", "freelance", "slavelabour", "hiring"]
+SUBREDDITS = [
+    # General hiring boards
+    "forhire", "freelance", "slavelabour", "hiring",
+    # Remote-dev specific
+    "remotejs", "jobbit",
+    # Stack-specific dev hiring threads
+    "reactjs", "webdev", "node", "django",
+]
 
 
 class RedditScraper:

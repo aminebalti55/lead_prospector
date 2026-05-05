@@ -5,6 +5,7 @@ import { AppShell } from "./components/shell/AppShell";
 import { InboxPage } from "./pages/inbox/InboxPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { HubPage } from "./pages/hub/HubPage";
+import { PipelinePage } from "./pages/pipeline/PipelinePage";
 
 import { ColdDashboard } from "./pages/cold/Dashboard";
 import { ColdLeads } from "./pages/cold/Leads";
@@ -32,7 +33,7 @@ export default function App() {
           <Route element={<AppShell />}>
             <Route path="/inbox" element={<InboxPage />} />
             <Route path="/hub" element={<HubPage />} />
-            <Route path="/pipeline" element={<PlaceholderPage title="Pipeline" shipping="Plan 3 — Pipeline Kanban" />} />
+            <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/sources" element={<PlaceholderPage title="Sources" shipping="Plan 4 — Sources page" />} />
             <Route path="/outreach" element={<PlaceholderPage title="Outreach" shipping="Plan 5 — Outreach revamp" />} />
             <Route path="/templates" element={<PlaceholderPage title="Templates" shipping="Plan 5 — Templates" />} />

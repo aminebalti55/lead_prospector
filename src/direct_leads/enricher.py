@@ -27,11 +27,34 @@ class LeadEnricher:
 
         try:
             page = self.fetcher.get(url)
-            if not page:
-                return lead
+            html = ""
+            text = ""
+            if page is not None:
+                html = (
+                    page.html_content
+                    if getattr(page, "html_content", None)
+                    else (getattr(page, "body", b"") or b"").decode("utf-8", errors="replace")
+                )
+                text = page.get_all_text() if hasattr(page, "get_all_text") else html
 
-            html = str(page)
-            text = page.get_all_text() if hasattr(page, 'get_all_text') else html
+            # Fallback: if HTTP returned nothing/empty, retry via StealthyFetcher
+            if not html or len(html) < 200:
+                from scrapling import StealthyFetcher
+                logger.debug(f"Enricher retrying {url} via StealthyFetcher")
+                stealth_page = StealthyFetcher().get(url)
+                if stealth_page is not None:
+                    html = (
+                        stealth_page.html_content
+                        if getattr(stealth_page, "html_content", None)
+                        else (getattr(stealth_page, "body", b"") or b"").decode("utf-8", errors="replace")
+                    )
+                    text = (
+                        stealth_page.get_all_text()
+                        if hasattr(stealth_page, "get_all_text")
+                        else html
+                    )
+            if not html:
+                return lead
 
             # Extract email
             if not lead.contact_email:

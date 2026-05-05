@@ -138,6 +138,8 @@ def test_search_calls_stealthy_fetcher_with_correct_url(monkeypatch):
     """Mock StealthyFetcher.async_fetch to verify URL + Cloudflare-bypass kwargs."""
     from src.direct_leads.scrapers import tanit as tanit_mod
     fake_response = MagicMock()
+    fake_response.html_content = FIXTURE_HTML
+    fake_response.body = FIXTURE_HTML.encode("utf-8")
     fake_response.get_all_text = MagicMock(return_value=FIXTURE_HTML)
 
     called = {}
@@ -163,6 +165,8 @@ def test_search_paginates_when_max_results_exceeds_one_page(monkeypatch):
     """With max_results=50, scraper requests at least 3 pages (50/23 = ceil(2.17) = 3)."""
     from src.direct_leads.scrapers import tanit as tanit_mod
     fake_response = MagicMock()
+    fake_response.html_content = FIXTURE_HTML
+    fake_response.body = FIXTURE_HTML.encode("utf-8")
     fake_response.get_all_text = MagicMock(return_value=FIXTURE_HTML)
 
     page_calls: list[str] = []

@@ -1,7 +1,9 @@
 import clsx from "clsx";
-import { Check, Mail, MailX } from "lucide-react";
+import { Check, Mail, MailX, CheckCircle2 } from "lucide-react";
 import { Opportunity } from "../../types/opportunity";
 import { StatusDot, Pill, MoneyValue } from "../../design/primitives";
+
+const POST_NEW_STAGES = new Set(["contacted", "replied", "meeting", "won", "lost"]);
 
 interface Props {
   opp: Opportunity;
@@ -24,6 +26,7 @@ function formatAge(iso: string | null): string {
 
 export function OpportunityListItem({ opp, active, selected, onClick, onToggleSelect }: Props) {
   const hasEmail = !!(opp.contact_email && opp.contact_email.includes("@"));
+  const alreadyTouched = POST_NEW_STAGES.has(opp.stage);
   return (
     <div
       className={clsx(
@@ -51,7 +54,10 @@ export function OpportunityListItem({ opp, active, selected, onClick, onToggleSe
       <button
         type="button"
         onClick={onClick}
-        className="flex-1 text-left flex flex-col gap-1.5 min-w-0"
+        className={clsx(
+          "flex-1 text-left flex flex-col gap-1.5 min-w-0",
+          alreadyTouched && "opacity-60",
+        )}
       >
         <div className="flex items-center gap-2 min-w-0">
           <StatusDot status={opp.priority === "hot" ? "hot" : opp.priority === "warm" ? "warm" : "cold"} />
@@ -67,6 +73,11 @@ export function OpportunityListItem({ opp, active, selected, onClick, onToggleSe
             <Mail className="w-3 h-3 text-[var(--color-accent)] shrink-0" aria-label="Has email" />
           ) : (
             <MailX className="w-3 h-3 text-[var(--color-text-tertiary)] shrink-0" aria-label="No email" />
+          )}
+          {alreadyTouched && (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-[var(--radius-xs)] bg-[var(--color-accent)]/15 text-[var(--color-accent)] text-[10px] font-medium uppercase tracking-wider">
+              <CheckCircle2 className="w-2.5 h-2.5" /> {opp.stage}
+            </span>
           )}
           <span className="ml-auto tabular-nums">{formatAge(opp.posted_date)}</span>
         </div>

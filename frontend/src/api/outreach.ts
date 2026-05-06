@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "./client";
 
 export interface OutreachSendBody {
@@ -23,6 +23,7 @@ export interface OutreachSendResponse {
 }
 
 export function useSendOutreach() {
+  const qc = useQueryClient();
   return useMutation<OutreachSendResponse, Error, OutreachSendBody>({
     mutationFn: (body) =>
       apiFetch("/outreach/send", {
@@ -30,6 +31,11 @@ export function useSendOutreach() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
+    onSuccess: (res) => {
+      if (res.stage_advanced) {
+        qc.invalidateQueries({ queryKey: ["opportunities"] });
+      }
+    },
   });
 }
 
@@ -65,6 +71,7 @@ export interface OutreachBulkSendResponse {
 }
 
 export function useBulkSendOutreach() {
+  const qc = useQueryClient();
   return useMutation<OutreachBulkSendResponse, Error, OutreachBulkSendBody>({
     mutationFn: (body) =>
       apiFetch("/outreach/bulk_send", {
@@ -72,5 +79,10 @@ export function useBulkSendOutreach() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
+    onSuccess: (res) => {
+      if (res.sent > 0) {
+        qc.invalidateQueries({ queryKey: ["opportunities"] });
+      }
+    },
   });
 }

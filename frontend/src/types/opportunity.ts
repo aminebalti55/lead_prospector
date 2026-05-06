@@ -48,4 +48,9 @@ export interface OpportunityFilters {
   q?: string;
   sort?: "score" | "value" | "recent";
   limit?: number;
+  // Cold-prospect view: hide leads with no email so the user only sees
+  // bulkable prospects. Default off.
+  has_email?: boolean;
+  // Hide already-contacted leads so the user focuses on what's actionable.
+  hide_contacted?: boolean;
 }

@@ -285,34 +285,54 @@ def _l1_mailto(soup: BeautifulSoup) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def _l1_json_ld(soup: BeautifulSoup) -> list[str]:
-    """Schema.org structured data — Organization.email, LocalBusiness.email,
-    handles @graph nesting (Yoast SEO style)."""
+def _l1_structured(html_text: str, base_url: str) -> list[str]:
+    """All four structured-data formats SMB sites commonly publish:
+    JSON-LD (Yoast SEO), microdata (`itemprop="email"`), RDFa, OpenGraph.
+
+    `extruct` handles the format quirks (e.g. JSON-LD `@graph` nesting,
+    microdata `itemref` resolution) that our hand-rolled walker missed.
+    Microdata in particular adds yield — older WordPress themes use
+    `<span itemprop="email">info@...</span>` instead of JSON-LD."""
     out: list[str] = []
+    try:
+        import extruct
+        data = extruct.extract(
+            html_text,
+            base_url=base_url or None,
+            syntaxes=["json-ld", "microdata", "rdfa", "opengraph"],
+            uniform=True,
+        )
+    except Exception:
+        return out
+
+    def _normalize(value: str) -> str:
+        # extruct preserves `mailto:` prefix when the itemprop="email" is on
+        # an anchor — strip it and any querystring.
+        v = value.strip()
+        if v.lower().startswith("mailto:"):
+            v = v[len("mailto:"):]
+        return v.split("?", 1)[0].strip().lower()
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
             for k, v in node.items():
                 if k.lower() == "email":
-                    if isinstance(v, str) and _is_valid_email(v):
-                        out.append(v.lower())
+                    candidates: list[str] = []
+                    if isinstance(v, str):
+                        candidates.append(v)
                     elif isinstance(v, list):
-                        for item in v:
-                            if isinstance(item, str) and _is_valid_email(item):
-                                out.append(item.lower())
+                        candidates.extend(c for c in v if isinstance(c, str))
+                    for c in candidates:
+                        normalized = _normalize(c)
+                        if _is_valid_email(normalized):
+                            out.append(normalized)
                 else:
                     walk(v)
         elif isinstance(node, list):
             for item in node:
                 walk(item)
 
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        if not script.string:
-            continue
-        try:
-            walk(json.loads(script.string))
-        except json.JSONDecodeError:
-            continue
+    walk(data)
     return list(dict.fromkeys(out))
 
 
@@ -373,7 +393,7 @@ def _l1_text_regex(html_text: str) -> list[str]:
     ))
 
 
-def _layer1_extract(html_text: str, domain: str) -> tuple[str | None, str]:
+def _layer1_extract(html_text: str, domain: str, base_url: str = "") -> tuple[str | None, str]:
     """Run all Layer 1 techniques in priority order. Returns (email, sub-source-tag)."""
     if not html_text:
         return None, ""
@@ -387,7 +407,7 @@ def _layer1_extract(html_text: str, domain: str) -> tuple[str | None, str]:
     # emails, parent-company addresses).
     explicit = [
         ("mailto", _l1_mailto(soup)),
-        ("json_ld", _l1_json_ld(soup)),
+        ("structured", _l1_structured(html_text, base_url)),  # JSON-LD + microdata + RDFa + OG
         ("cfemail", _l1_cfemail(soup)),
         ("meta", _l1_meta_tags(soup)),
     ]
@@ -407,6 +427,33 @@ def _layer1_extract(html_text: str, domain: str) -> tuple[str | None, str]:
         if chosen:
             return chosen, name
     return None, ""
+
+
+def _has_mx_record(email: str) -> bool:
+    """Confirm the domain after `@` has a working mail server. Drops emails
+    pointing at dead/typo domains before we ever try to send.
+
+    Cached per-domain because every business has at most a handful of
+    domains and DNS is slow."""
+    if not email or "@" not in email:
+        return False
+    domain = email.partition("@")[2]
+    if not domain:
+        return False
+    cached = _mx_cache.get(domain)
+    if cached is not None:
+        return cached
+    try:
+        import dns.resolver
+        answers = dns.resolver.resolve(domain, "MX", lifetime=5.0)
+        ok = len(list(answers)) > 0
+    except Exception:
+        ok = False
+    _mx_cache[domain] = ok
+    return ok
+
+
+_mx_cache: dict[str, bool] = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -480,7 +527,7 @@ class EmailExtractor:
         if url:
             homepage_html = _fetch_html(url)
             if homepage_html:
-                email, sub = _layer1_extract(homepage_html, domain)
+                email, sub = _layer1_extract(homepage_html, domain, base_url=url)
                 if email:
                     return EmailResult(
                         email=email,
@@ -491,8 +538,9 @@ class EmailExtractor:
         # ── LAYER 2: Multi-page site crawl ────────────────────────────────
         if url:
             for path, kind in CONTACT_PATHS:
-                page_html = _fetch_html(url.rstrip("/") + path)
-                email, sub = _layer1_extract(page_html, domain)
+                page_url = url.rstrip("/") + path
+                page_html = _fetch_html(page_url)
+                email, sub = _layer1_extract(page_html, domain, base_url=page_url)
                 if email:
                     return EmailResult(
                         email=email,
@@ -509,7 +557,7 @@ class EmailExtractor:
         if url and (_looks_jsy(homepage_html) or not homepage_html or homepage_html):
             rendered = await _fetch_html_stealth_async(url)
             if rendered:
-                email, sub = _layer1_extract(rendered, domain)
+                email, sub = _layer1_extract(rendered, domain, base_url=url)
                 if email:
                     return EmailResult(
                         email=email,

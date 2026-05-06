@@ -100,6 +100,19 @@ export function FilterPanel({ value, onChange, totalsByPriority, totalsByType }:
         />
       </FilterRow>
 
+      <FilterRow label="Show only">
+        <FilterPill
+          label="Has email"
+          active={!!value.has_email}
+          onClick={() => onChange({ ...value, has_email: !value.has_email })}
+        />
+        <FilterPill
+          label="Not contacted"
+          active={!!value.hide_contacted}
+          onClick={() => onChange({ ...value, hide_contacted: !value.hide_contacted })}
+        />
+      </FilterRow>
+
       <FilterRow label="Sort by">
         <FilterPill
           label="Score"

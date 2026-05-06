@@ -37,7 +37,11 @@ export function OpportunityList({ items, selectedId, onSelect, loading }: Props)
     () => items.filter((o) => checked.has(o.id)),
     [items, checked],
   );
-  const selectedWithEmail = selectedItems.filter(
+  // Bulk send only makes sense for cold prospects — direct (job) leads
+  // expect an individual reply on-platform, not a templated email blast.
+  const selectedCold = selectedItems.filter((o) => o.type === "cold");
+  const selectedDirectCount = selectedItems.length - selectedCold.length;
+  const coldWithEmail = selectedCold.filter(
     (o) => o.contact_email && o.contact_email.includes("@"),
   ).length;
 
@@ -58,25 +62,34 @@ export function OpportunityList({ items, selectedId, onSelect, loading }: Props)
         )}
       </div>
 
-      {/* Bulk action bar */}
+      {/* Bulk action bar — cold prospects only */}
       {checked.size > 0 && (
         <div className="px-3 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)] flex items-center gap-2">
-          <span className="text-[12px] text-[var(--color-text-primary)] flex-1">
-            {checked.size} selected
-            {selectedWithEmail < checked.size && (
+          <span className="text-[12px] text-[var(--color-text-primary)] flex-1 leading-tight">
+            {selectedCold.length > 0 ? (
+              <>
+                {selectedCold.length} cold selected
+                <span className="text-[var(--color-text-tertiary)]"> · {coldWithEmail} with email</span>
+              </>
+            ) : (
               <span className="text-[var(--color-text-tertiary)]">
-                {" "}
-                · {selectedWithEmail} with email
+                Bulk send only applies to cold prospects.
+              </span>
+            )}
+            {selectedDirectCount > 0 && (
+              <span className="block text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
+                {selectedDirectCount} direct (job) lead{selectedDirectCount === 1 ? "" : "s"} ignored —
+                reply individually from the detail panel.
               </span>
             )}
           </span>
           <Button
             variant="primary"
             onClick={() => setShowBulkSend(true)}
-            disabled={selectedWithEmail === 0}
+            disabled={coldWithEmail === 0}
           >
             <Send className="w-3 h-3 mr-1" />
-            Send template
+            Send to {coldWithEmail}
           </Button>
           <button
             type="button"
@@ -112,7 +125,7 @@ export function OpportunityList({ items, selectedId, onSelect, loading }: Props)
 
       {showBulkSend && (
         <SendTemplateModal
-          recipients={selectedItems}
+          recipients={selectedCold}
           onClose={() => {
             setShowBulkSend(false);
             // Keep selection so user can adjust + retry if some failed.

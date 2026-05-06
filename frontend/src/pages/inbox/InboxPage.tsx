@@ -12,8 +12,24 @@ export function InboxPage() {
   const oppFromUrl = searchParams.get("opp");
   const [selectedId, setSelectedId] = useState<string | null>(oppFromUrl);
 
-  const { data, isLoading } = useOpportunities(filters);
-  const items = data?.opportunities ?? [];
+  // Server query — has_email and hide_contacted are filtered client-side so
+  // the totals panel still reflects the unfiltered counts.
+  const { data, isLoading } = useOpportunities({
+    ...filters,
+    has_email: undefined,
+    hide_contacted: undefined,
+  });
+  const POST_NEW = new Set(["contacted", "replied", "meeting", "won", "lost"]);
+  const items = useMemo(() => {
+    let list = data?.opportunities ?? [];
+    if (filters.has_email) {
+      list = list.filter((o) => o.contact_email && o.contact_email.includes("@"));
+    }
+    if (filters.hide_contacted) {
+      list = list.filter((o) => !POST_NEW.has(o.stage));
+    }
+    return list;
+  }, [data?.opportunities, filters.has_email, filters.hide_contacted]);
   const selected = items.find((o) => o.id === selectedId) ?? items[0] ?? null;
 
   // If URL ?opp= param changes, prefer it over current selection

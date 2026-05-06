@@ -55,8 +55,20 @@ export function SendTemplateModal({ recipients, onClose }: Props) {
     return templatesQ.data?.templates.find((t) => t.id === templateId);
   }, [templatesQ.data, templateId]);
 
-  const withEmail = recipients.filter((r) => r.contact_email && r.contact_email.includes("@"));
-  const withoutEmail = recipients.length - withEmail.length;
+  // Active leads = not yet contacted/replied/meeting/won/lost. Sending again
+  // to a lead already past "researching" risks looking spammy and undoes the
+  // pipeline state, so we skip them automatically.
+  const ALREADY_CONTACTED_STAGES = new Set(["contacted", "replied", "meeting", "won", "lost"]);
+  const withEmail = recipients.filter(
+    (r) =>
+      r.contact_email &&
+      r.contact_email.includes("@") &&
+      !ALREADY_CONTACTED_STAGES.has(r.stage),
+  );
+  const alreadyContacted = recipients.filter((r) =>
+    ALREADY_CONTACTED_STAGES.has(r.stage),
+  ).length;
+  const withoutEmail = recipients.length - withEmail.length - alreadyContacted;
 
   const previewVars = single
     ? { ...buildVariables(single), sender_name: "You" }
@@ -152,13 +164,20 @@ export function SendTemplateModal({ recipients, onClose }: Props) {
         </div>
 
         {/* Bulk gating banner */}
-        {isBulk && withoutEmail > 0 && (
+        {isBulk && (withoutEmail > 0 || alreadyContacted > 0) && (
           <div className="flex gap-2 items-start text-[12px] p-2.5 rounded-[var(--radius-sm)] bg-[var(--color-warm)]/15 text-[var(--color-warm)]">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-            <span>
-              {withoutEmail} of {recipients.length} selected leads have no email and will be skipped.
-              Only {withEmail.length} will be sent.
-            </span>
+            <div className="flex flex-col gap-0.5">
+              {withoutEmail > 0 && (
+                <span>{withoutEmail} have no email — skipped.</span>
+              )}
+              {alreadyContacted > 0 && (
+                <span>{alreadyContacted} already contacted — skipped to avoid double-send.</span>
+              )}
+              <span className="text-[var(--color-warm)]/80">
+                Sending to {withEmail.length} of {recipients.length} selected.
+              </span>
+            </div>
           </div>
         )}
 

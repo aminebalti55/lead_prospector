@@ -1,118 +1,199 @@
-"""Cold outreach router — extracted from backend/app.py."""
+"""Cold-outreach router — Supabase-backed.
+
+- POST /scans       create + dispatch a cold scrape job
+- GET  /scans       list recent scan records
+- GET  /scans/{id}  one scan
+- GET  /leads       all cold opportunities
+- GET  /leads/{id}  one
+- PATCH /leads/{id} partial update (notes, stage, owner, …)
+"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
-from pathlib import Path
+import asyncio
+import logging
 
-from src.core.storage import list_files, read_leads, update_lead
-from src.core.config import COLD_OUTPUT_DIR, OUTPUT_DIR
-from backend.models import (
-    RunCreateRequest,
-    RunCreateResponse,
-    RunStatusResponse,
-)
-from backend.run_manager import RunManager
+from fastapi import APIRouter, HTTPException
+
+from backend.services import scans_store
+from backend.services.supabase_client import get_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cold", tags=["cold-outreach"])
 
-run_manager = RunManager()
+
+_DEFAULT_NICHES = ["plumbing"]
+_DEFAULT_SCRAPERS = ["google_maps", "yelp", "yellowpages", "bbb", "manta"]
 
 
-# ── File endpoints ────────────────────────────────────────────────────
-
-@router.get("/files")
-async def list_cold_files():
-    cold_files = list_files("cold")
-    legacy_files = list_files("legacy")
-    return {"files": cold_files + legacy_files}
+# ── Scan endpoints ────────────────────────────────────────────────────
 
 
-@router.get("/files/{filename}/leads")
-async def get_cold_leads(filename: str):
-    # Try cold dir first, then legacy
+@router.post("/scans")
+async def create_scan(body: dict):
+    locations = body.get("locations") or []
+    niches = body.get("niches") or _DEFAULT_NICHES
+    if not locations:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one location is required (e.g. 'Austin, TX').",
+        )
+
+    scan = scans_store.create({
+        "type": "cold",
+        "status": "queued",
+        "sources": _DEFAULT_SCRAPERS,
+        "locations": locations,
+        "niches": niches,
+        "max_results": int(body.get("max_results") or 20),
+    })
+
+    asyncio.create_task(_execute_scan(scan["id"], {
+        "locations": locations,
+        "niches": niches,
+        "skip_scrapers": body.get("skip_scrapers") or [],
+        "skip_audit": bool(body.get("skip_audit") or False),
+        "fetch_emails": bool(body.get("fetch_emails", True)),
+        "fetch_details": bool(body.get("fetch_details", True)),
+        "max_results": int(body.get("max_results") or 20),
+    }))
+
+    return {"scan_id": scan["id"], "status": "queued", "message": "Scan started"}
+
+
+@router.get("/scans/{scan_id}")
+async def get_scan(scan_id: str):
+    s = scans_store.get(scan_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return s
+
+
+@router.get("/scans")
+async def list_scans():
+    return {"scans": scans_store.list_all(limit=50)}
+
+
+# ── Scan execution (background task) ────────────────────────────────
+
+
+async def _execute_scan(scan_id: str, params: dict) -> None:
+    scans_store.mark_running(scan_id)
+    locations = params["locations"]
+    niches = params["niches"]
+    scans_store.append_log(
+        scan_id,
+        f"Scraping {len(niches)} niche(s) across {len(locations)} location(s)...",
+    )
+
     try:
-        headers, rows = read_leads(filename, "cold")
-    except FileNotFoundError:
-        try:
-            headers, rows = read_leads(filename, "legacy")
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="File not found")
-    return {"file": filename, "columns": headers, "rows": rows}
+        from src.cold_outreach.pipeline import ColdOutreachPipeline
+
+        pipeline = ColdOutreachPipeline()
+
+        def on_progress(msg: str):
+            scans_store.append_log(scan_id, msg)
+            logger.info(f"[COLD-SCAN {scan_id}] {msg}")
+
+        ids = await pipeline.run(
+            locations=locations,
+            niches=niches,
+            max_results=params["max_results"],
+            skip_scrapers=params.get("skip_scrapers") or [],
+            skip_audit=params.get("skip_audit") or False,
+            fetch_emails=params.get("fetch_emails", True),
+            fetch_details=params.get("fetch_details", True),
+            progress_callback=on_progress,
+            scan_id=scan_id,
+        )
+
+        # How many of those have an email? Useful surfacing for the UI.
+        emails_count = 0
+        if ids:
+            resp = (
+                get_client()
+                .table("opportunities")
+                .select("id", count="exact")
+                .in_("id", ids[:200])  # PostgREST `in` cap is generous; chunk just in case
+                .neq("contact_email", "")
+                .execute()
+            )
+            emails_count = resp.count or 0
+
+        scans_store.mark_completed(
+            scan_id, leads_found=len(ids), emails_extracted=emails_count
+        )
+        scans_store.append_log(
+            scan_id,
+            f"Done — {len(ids)} prospects persisted, {emails_count} with email.",
+        )
+        logger.info(f"[COLD-SCAN {scan_id}] Completed: {len(ids)} leads")
+
+    except Exception as e:
+        logger.error(f"[COLD-SCAN {scan_id}] Failed: {e}", exc_info=True)
+        scans_store.mark_failed(scan_id, str(e))
+        scans_store.append_log(scan_id, f"Error: {e}")
 
 
-@router.get("/files/{filename}/download")
-async def download_cold_file(filename: str):
-    safe_name = Path(filename).name
-    # Check cold dir first, then legacy (OUTPUT_DIR)
-    for directory in [COLD_OUTPUT_DIR, OUTPUT_DIR]:
-        path = directory / safe_name
-        if path.exists():
-            return FileResponse(path, filename=safe_name)
-    raise HTTPException(status_code=404, detail="File not found")
+# ── Lead endpoints ────────────────────────────────────────────────────
+
+
+@router.get("/leads")
+async def list_cold_leads():
+    resp = (
+        get_client()
+        .table("opportunities")
+        .select(
+            "id, source, title, description, url, "
+            "contact_email, contact_phone, email_source, email_confidence, "
+            "stage, score, priority, "
+            "company_name, location, city, state, niche, "
+            "pain_tags, has_website, has_ssl, "
+            "google_rating, google_review_count, yelp_rating, yelp_review_count",
+            count="exact",
+        )
+        .eq("type", "cold")
+        .order("score", desc=True)
+        .limit(500)
+        .execute()
+    )
+    return {"leads": resp.data or [], "total": resp.count or 0}
+
+
+@router.get("/leads/{lead_id}")
+async def get_cold_lead(lead_id: str):
+    resp = (
+        get_client()
+        .table("opportunities")
+        .select("*")
+        .eq("id", lead_id)
+        .eq("type", "cold")
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return rows[0]
 
 
 @router.patch("/leads/{lead_id}")
 async def update_cold_lead(lead_id: str, body: dict):
-    for section in ["cold", "legacy"]:
-        for f in list_files(section):
-            try:
-                update_lead(f["name"], lead_id, body, section)
-                return {"ok": True}
-            except (KeyError, FileNotFoundError):
-                continue
-    raise HTTPException(status_code=404, detail="Lead not found")
-
-
-# ── Run endpoints ─────────────────────────────────────────────────────
-
-@router.post("/runs", response_model=RunCreateResponse)
-async def create_run(body: RunCreateRequest) -> RunCreateResponse:
-    import traceback
-
-    try:
-        state = await run_manager.create_run(body)
-        return RunCreateResponse(
-            run_id=state.run_id, status=state.status, created_at=state.created_at
-        )
-    except Exception as e:
-        print(f"[COLD_ROUTER] create_run error: {e}", flush=True)
-        print(f"[COLD_ROUTER] Traceback:\n{traceback.format_exc()}", flush=True)
-        raise
-
-
-@router.get("/runs/{run_id}", response_model=RunStatusResponse)
-async def get_run(run_id: str) -> RunStatusResponse:
-    try:
-        state = await run_manager.get_run(run_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    return RunStatusResponse(
-        run_id=state.run_id,
-        status=state.status,
-        created_at=state.created_at,
-        started_at=state.started_at,
-        finished_at=state.finished_at,
-        params=state.params,
-        output_files=state.output_files,
-        error=state.error,
-        progress=state.progress,
-    )
-
-
-@router.get("/runs")
-async def list_runs():
-    runs = await run_manager.list_runs()
-    return {
-        "runs": [
-            {
-                "run_id": r.run_id,
-                "status": r.status,
-                "created_at": r.created_at.isoformat(),
-                "started_at": r.started_at.isoformat() if r.started_at else None,
-                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
-            }
-            for r in runs
-        ]
+    allowed = {
+        "stage", "notes", "owner", "last_contacted", "follow_up_date",
+        "contact_email", "contact_phone",
     }
+    payload = {k: v for k, v in body.items() if k in allowed}
+    if not payload:
+        return {"ok": True}
+    resp = (
+        get_client()
+        .table("opportunities")
+        .update(payload)
+        .eq("id", lead_id)
+        .eq("type", "cold")
+        .execute()
+    )
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return {"ok": True}

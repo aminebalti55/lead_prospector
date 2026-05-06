@@ -1,23 +1,36 @@
-import logging
-from datetime import datetime, timedelta
-from pathlib import Path
-import pandas as pd
+"""Direct-leads scrape pipeline — Supabase-backed.
 
-from src.core.scraper_engine import ScraperEngine
+Per-source scrape → dedup against existing opportunities → recency filter →
+score with RelevanceMatcher → enrich → bulk-upsert into the `opportunities`
+table. Returns the list of opportunity IDs written.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from datetime import datetime, timedelta
+
+from src.core.config import settings
 from src.core.models import DirectLead
-from src.core.config import settings, DIRECT_OUTPUT_DIR
-from src.core.storage import get_existing_direct_lead_urls
-from src.direct_leads.matcher import RelevanceMatcher
+from src.core.scraper_engine import ScraperEngine
 from src.direct_leads.enricher import LeadEnricher
-from src.direct_leads.scrapers.reddit import RedditScraper
-from src.direct_leads.scrapers.indeed import IndeedScraper
-from src.direct_leads.scrapers.linkedin_jobs import LinkedInJobsScraper
+from src.direct_leads.matcher import RelevanceMatcher
 from src.direct_leads.scrapers.clutch import ClutchScraper
 from src.direct_leads.scrapers.goodfirms import GoodFirmsScraper
-from src.direct_leads.scrapers.twitter import TwitterScraper
+from src.direct_leads.scrapers.indeed import IndeedScraper
+from src.direct_leads.scrapers.linkedin_jobs import LinkedInJobsScraper
 from src.direct_leads.scrapers.linkedin_posts import LinkedInPostsScraper
-from src.direct_leads.scrapers.tanit import TanitScraper
+from src.direct_leads.scrapers.reddit import RedditScraper
 from src.direct_leads.scrapers.remoteok import RemoteOKScraper
+from src.direct_leads.scrapers.tanit import TanitScraper
+from src.direct_leads.scrapers.twitter import TwitterScraper
+
+from backend.services.opportunities_store import (
+    direct_lead_to_row,
+    existing_urls,
+    upsert,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +60,17 @@ class DirectLeadsPipeline:
         max_results: int = 20,
         progress_callback=None,
         source_configs: dict | None = None,
+        scan_id: str | None = None,
     ) -> list[str]:
-        """Run the direct leads pipeline. Returns list of output file paths."""
+        """Scrape, score, enrich, and persist. Returns the IDs written to
+        Supabase (so the caller can update its scan record's `leads_found`)."""
         active_sources = sources or list(SCRAPER_CLASSES.keys())
-        existing_urls = get_existing_direct_lead_urls()
+        already_have = existing_urls()
         source_configs = source_configs or {}
 
-        # 1. Scrape from selected sources concurrently (bounded by semaphore)
-        import asyncio
-        max_concurrent = max(1, int(getattr(settings.scraping, "max_concurrent_scrapers", 3) or 3))
+        max_concurrent = max(1, int(
+            getattr(settings.scraping, "max_concurrent_scrapers", 3) or 3
+        ))
         sem = asyncio.Semaphore(max_concurrent)
 
         async def _run_one(source_name: str) -> list[DirectLead]:
@@ -81,48 +96,35 @@ class DirectLeadsPipeline:
         results = await asyncio.gather(*[_run_one(s) for s in active_sources])
         all_leads: list[DirectLead] = [lead for batch in results for lead in batch]
 
-        # 2. Deduplicate
-        unique = self._deduplicate(all_leads, existing_urls)
+        unique = self._deduplicate(all_leads, already_have)
         logger.info(f"Unique leads after dedup: {len(unique)}")
 
-        # 2b. Drop stale hiring posts. Agencies (GoodFirms/Clutch) have no
-        # posted_date and aren't time-sensitive — they pass through.
         unique = self._filter_recent(unique)
         logger.info(f"Leads after recency filter: {len(unique)}")
 
-        # 3. Score with matcher
         for lead in unique:
-            hours_ago = None
-            if lead.posted_date:
-                delta = datetime.now(tz=lead.posted_date.tzinfo) - lead.posted_date if lead.posted_date.tzinfo else datetime.now() - lead.posted_date
-                hours_ago = delta.total_seconds() / 3600
+            self._score_lead(lead)
 
-            lead.relevance_score = self.matcher.score(
-                description=f"{lead.title} {lead.description}",
-                posted_hours_ago=hours_ago,
-                has_budget=bool(lead.budget_signal),
-                has_contact=bool(lead.contact_email or lead.contact_phone),
-                is_remote="remote" in (lead.location or "").lower(),
-            )
-            lead.matched_skills = self.matcher.get_matched_skills(f"{lead.title} {lead.description}")
-            lead.budget_signal = self._detect_budget(lead.description) or ""
-            lead.urgency_signal = self._detect_urgency(lead.description) or ""
-
-        # 4. Enrich (company info)
         if progress_callback:
             progress_callback("Enriching leads...")
         unique = self.enricher.enrich_many(unique)
 
-        # 5. Sort by relevance
         unique.sort(key=lambda l: l.relevance_score, reverse=True)
 
-        # 6. Export
-        if unique:
-            return self._export(unique, keywords)
-        return []
+        if not unique:
+            return []
 
-    def _deduplicate(self, leads: list[DirectLead], existing_urls: set[str]) -> list[DirectLead]:
-        seen = set(existing_urls)
+        rows = [direct_lead_to_row(l, scan_id=scan_id) for l in unique]
+        upsert(rows)
+        logger.info(f"Persisted {len(rows)} direct leads to Supabase")
+        return [r["id"] for r in rows]
+
+    # ------------------------------------------------------------------
+
+    def _deduplicate(
+        self, leads: list[DirectLead], existing: set[str]
+    ) -> list[DirectLead]:
+        seen = set(existing)
         unique = []
         for lead in leads:
             if lead.url and lead.url not in seen:
@@ -131,20 +133,19 @@ class DirectLeadsPipeline:
         return unique
 
     def _filter_recent(self, leads: list[DirectLead]) -> list[DirectLead]:
-        """Drop hiring leads older than max_age_days. Agency leads (no
-        posted_date) pass through untouched."""
         max_age = int(getattr(settings.direct_leads, "max_age_days", 30) or 30)
         cutoff = datetime.now() - timedelta(days=max_age)
         kept: list[DirectLead] = []
         dropped = 0
         for lead in leads:
-            posted = lead.posted_date
-            # Agency listings carry no posted_date — keep them.
-            if posted is None:
-                kept.append(lead)
+            if lead.posted_date is None:
+                kept.append(lead)  # agency listings have no posted_date
                 continue
-            # Strip tz so naive/aware comparison stays consistent with cutoff.
-            posted_naive = posted.replace(tzinfo=None) if posted.tzinfo else posted
+            posted_naive = (
+                lead.posted_date.replace(tzinfo=None)
+                if lead.posted_date.tzinfo
+                else lead.posted_date
+            )
             if posted_naive >= cutoff:
                 kept.append(lead)
             else:
@@ -153,78 +154,43 @@ class DirectLeadsPipeline:
             logger.info(f"Dropped {dropped} stale leads (>{max_age}d old)")
         return kept
 
+    def _score_lead(self, lead: DirectLead) -> None:
+        hours_ago: float | None = None
+        if lead.posted_date:
+            now = datetime.now(tz=lead.posted_date.tzinfo) if lead.posted_date.tzinfo else datetime.now()
+            hours_ago = (now - lead.posted_date).total_seconds() / 3600
+
+        text = f"{lead.title} {lead.description}"
+        lead.relevance_score = self.matcher.score(
+            description=text,
+            posted_hours_ago=hours_ago,
+            has_budget=bool(lead.budget_signal),
+            has_contact=bool(lead.contact_email or lead.contact_phone),
+            is_remote="remote" in (lead.location or "").lower(),
+        )
+        lead.matched_skills = self.matcher.get_matched_skills(text)
+        lead.budget_signal = self._detect_budget(lead.description) or ""
+        lead.urgency_signal = self._detect_urgency(lead.description) or ""
+
     def _detect_budget(self, text: str) -> str | None:
-        import re
-        text = text.lower()
-        amounts = re.findall(r'\$[\d,]+', text)
+        text = (text or "").lower()
+        amounts = re.findall(r"\$[\d,]+", text)
         if amounts:
             for a in amounts:
                 val = int(a.replace("$", "").replace(",", ""))
                 if val >= 5000:
                     return "high"
-                elif val >= 1000:
+                if val >= 1000:
                     return "medium"
-                else:
-                    return "low"
+                return "low"
         if any(w in text for w in ["budget", "pay well", "competitive rate"]):
             return "medium"
         return None
 
     def _detect_urgency(self, text: str) -> str | None:
-        text = text.lower()
+        text = (text or "").lower()
         if any(w in text for w in ["asap", "urgent", "immediately", "this week"]):
             return "urgent"
         if any(w in text for w in ["soon", "next week", "within a month"]):
             return "normal"
         return None
-
-    def _export(self, leads: list[DirectLead], keywords: list[str]) -> list[str]:
-        """Export direct leads to Excel."""
-        DIRECT_OUTPUT_DIR.mkdir(exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        kw_slug = "_".join(keywords[:3]).replace(" ", "-")[:30]
-        filename = f"direct_{kw_slug}_{timestamp}.xlsx"
-        path = DIRECT_OUTPUT_DIR / filename
-
-        records = []
-        for lead in leads:
-            priority = self.matcher.get_priority(lead.relevance_score)
-            records.append({
-                "Lead_ID": lead.lead_id,
-                "Priority": priority.upper(),
-                "Relevance_Score": lead.relevance_score,
-                "Source": lead.source,
-                "Lead_Subtype": lead.lead_subtype,
-                "Title": lead.title,
-                "Description": lead.description[:500],
-                "URL": lead.url,
-                "Posted_Date": lead.posted_date.isoformat() if lead.posted_date else "",
-                "Company": lead.company_name or "",
-                "Company_Website": lead.company_website or "",
-                "Location": lead.location or "",
-                "Contact_Name": lead.contact_name or "",
-                "Contact_Email": lead.contact_email or "",
-                "Contact_Phone": lead.contact_phone or "",
-                "Budget_Signal": lead.budget_signal or "",
-                "Urgency_Signal": lead.urgency_signal or "",
-                "Matched_Skills": ", ".join(lead.matched_skills),
-                "Outreach_Status": lead.outreach_status,
-                "Notes": lead.notes or "",
-            })
-
-        df = pd.DataFrame(records)
-        priority_order = {"HOT": 0, "WARM": 1, "COLD": 2}
-        df["_order"] = df["Priority"].map(lambda x: priority_order.get(x, 3))
-        df = df.sort_values(["_order", "Relevance_Score"], ascending=[True, False]).drop("_order", axis=1)
-
-        with pd.ExcelWriter(path, engine="openpyxl") as writer:
-            df.to_excel(writer, sheet_name="Leads", index=False)
-            # Auto-adjust column widths
-            ws = writer.sheets["Leads"]
-            for idx, col in enumerate(df.columns):
-                max_len = max(df[col].astype(str).map(len).max(), len(col))
-                from openpyxl.utils import get_column_letter
-                ws.column_dimensions[get_column_letter(idx + 1)].width = min(max_len + 2, 50)
-
-        logger.info(f"Exported {len(leads)} direct leads to {path}")
-        return [str(path)]

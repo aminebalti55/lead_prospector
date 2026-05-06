@@ -24,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.routers import cold_outreach, direct_leads, hub, opportunities, outreach, settings as settings_router, shared, sources, templates
 from backend.scheduler import Scheduler
+from backend.services.imap_poller import ImapPoller
+from backend.services.sequence_worker import SequenceWorker
 
 app = FastAPI(title="Lead Prospector API", version="2.0.0")
 
@@ -49,17 +51,26 @@ app.include_router(settings_router.router)
 app.include_router(templates.router)
 app.include_router(outreach.router)
 
+from backend.routers import sequences as sequences_router
+app.include_router(sequences_router.router)
+
 scheduler = Scheduler()
+sequence_worker = SequenceWorker()
+imap_poller = ImapPoller()
 
 
 @app.on_event("startup")
 async def startup():
     await scheduler.start()
+    await sequence_worker.start()
+    await imap_poller.start()
 
 
 @app.on_event("shutdown")
 async def shutdown():
     await scheduler.stop()
+    await sequence_worker.stop()
+    await imap_poller.stop()
 
 
 # Serve frontend if built

@@ -1,109 +1,56 @@
-"""Sources index + per-source actions: list, run-now, toggle."""
+"""Sources index + per-source actions: list, run-now, toggle.
+
+Supabase-backed — pulls every opportunity + recent scan once per request.
+"""
 from __future__ import annotations
 
 import asyncio
-import json
-import uuid
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from src.core.config import DIRECT_OUTPUT_DIR
-from src.core.storage import list_files, read_leads
-from src.core.models import DirectLead
-from backend.services import source_state
-from backend.services.opportunity_aggregator import (
-    cold_row_to_opportunity,
-    direct_lead_to_opportunity,
-)
+from backend.services import scans_store, source_state
+from backend.services.hub_aggregator import _KNOWN_COLD_SOURCES, _KNOWN_DIRECT_SOURCES
 from backend.services.source_metrics import compute_source_summary
-from backend.services.hub_aggregator import _KNOWN_DIRECT_SOURCES, _KNOWN_COLD_SOURCES
+from backend.services.supabase_client import get_client
+
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
-
-SCANS_FILE = DIRECT_OUTPUT_DIR / "scans.json"
 
 ALL_KNOWN_SOURCES: list[str] = list(_KNOWN_DIRECT_SOURCES) + list(_KNOWN_COLD_SOURCES)
 
 
-def _load_scans() -> list[dict]:
-    if not SCANS_FILE.exists():
-        return []
-    try:
-        return json.loads(SCANS_FILE.read_text())
-    except Exception:
-        return []
-
-
-def _save_scans(scans: list[dict]) -> None:
-    SCANS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SCANS_FILE.write_text(json.dumps(scans, indent=2, default=str))
-
-
-def _parse_iso_to_dt(value):
-    """Lenient ISO parser for re-hydrating DirectLead.posted_date from Excel rows."""
-    from datetime import datetime as _dt
-    if not value:
-        return None
-    if isinstance(value, _dt):
-        return value
-    try:
-        return _dt.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-
-
-def _load_all_opportunity_dicts() -> list[dict]:
-    """Same shape as opportunities/hub routers — read everything as Opportunity dicts."""
-    from dataclasses import asdict
-    out: list[dict] = []
-    for section in ("cold", "legacy"):
-        for f in list_files(section):
-            try:
-                _, rows = read_leads(f["name"], section)
-            except Exception:
-                continue
-            for row in rows:
-                opp = cold_row_to_opportunity(row, source_file=f["name"])
-                if opp.id:
-                    out.append(asdict(opp))
-    for f in list_files("direct"):
-        try:
-            _, rows = read_leads(f["name"], "direct")
-        except Exception:
-            continue
-        for row in rows:
-            lead = DirectLead(
-                source=row.get("Source") or "",
-                title=row.get("Title") or "",
-                description=row.get("Description") or "",
-                url=row.get("URL") or "",
-                company_name=row.get("Company") or "",
-                company_website=row.get("Company_Website") or "",
-                location=row.get("Location") or "",
-                contact_name=row.get("Contact_Name") or "",
-                contact_email=row.get("Contact_Email") or "",
-                contact_phone=row.get("Contact_Phone") or "",
-                relevance_score=int(row.get("Relevance_Score") or 0),
-                budget_signal=row.get("Budget_Signal") or "",
-                urgency_signal=row.get("Urgency_Signal") or "",
-                matched_skills=[s.strip() for s in (row.get("Matched_Skills") or "").split(",") if s.strip()],
-                outreach_status=row.get("Outreach_Status") or "new",
-                notes=row.get("Notes") or "",
-                posted_date=_parse_iso_to_dt(row.get("Posted_Date")),
-            )
-            if row.get("Lead_ID"):
-                lead.lead_id = str(row["Lead_ID"])
-            opp = direct_lead_to_opportunity(lead, source_file=f["name"])
-            if opp.id:
-                out.append(asdict(opp))
-    return out
+def _all_opportunities() -> list[dict]:
+    resp = (
+        get_client()
+        .table("opportunities")
+        .select(
+            "id, type, source, posted_date, contact_email, contact_phone, "
+            "stage, score, priority, estimated_value_usd"
+        )
+        .limit(5000)
+        .execute()
+    )
+    rows = resp.data or []
+    # Project to the shape compute_source_summary expects.
+    return [
+        {
+            "id": r["id"],
+            "type": r["type"],
+            "source": r["source"],
+            "posted_date": r.get("posted_date"),
+            "contact_email": r.get("contact_email") or "",
+            "contact_phone": r.get("contact_phone") or "",
+            "stage": r.get("stage") or "new",
+            "score": int(r.get("score") or 0),
+            "priority": r.get("priority") or "cold",
+            "estimated_value_usd": int(r.get("estimated_value_usd") or 0),
+        }
+        for r in rows
+    ]
 
 
 def _last_keywords_for_source(source: str, scans: list[dict]) -> list[str] | None:
-    """Find the most recent scan that includes this source and return its keywords."""
     matching = [s for s in scans if source in (s.get("sources") or []) and s.get("keywords")]
     matching.sort(
         key=lambda s: s.get("finished_at") or s.get("started_at") or s.get("created_at") or "",
@@ -116,8 +63,8 @@ def _last_keywords_for_source(source: str, scans: list[dict]) -> list[str] | Non
 
 @router.get("")
 async def list_sources() -> dict[str, Any]:
-    scans = _load_scans()
-    opps = _load_all_opportunity_dicts()
+    scans = scans_store.list_all(limit=200)
+    opps = _all_opportunities()
     sources = [
         compute_source_summary(
             source=name,
@@ -142,32 +89,54 @@ async def toggle_source(name: str) -> dict[str, Any]:
 async def run_source(name: str) -> dict[str, Any]:
     if name not in ALL_KNOWN_SOURCES:
         raise HTTPException(status_code=404, detail=f"Unknown source: {name}")
-    scans = _load_scans()
+
+    scans = scans_store.list_all(limit=200)
     keywords = _last_keywords_for_source(name, scans)
     if not keywords:
         raise HTTPException(
             status_code=400,
-            detail="No prior scan history for this source — please run a saved search with keywords first, or use the New Scan form.",
+            detail=(
+                "No prior scan history for this source — please run a saved "
+                "search with keywords first, or use the New Scan form."
+            ),
         )
-    # Reuse the existing direct-leads scan creation flow.
-    from backend.routers.direct_leads import _execute_scan, _save_scans as _save_scans_dl
-    scan_id = uuid.uuid4().hex[:8]
-    scan = {
-        "id": scan_id,
+
+    is_cold = name in _KNOWN_COLD_SOURCES
+    scan = scans_store.create({
+        "type": "cold" if is_cold else "direct",
         "status": "queued",
         "sources": [name],
-        "source_configs": {},
         "keywords": keywords,
         "max_results": 50,
-        "progress": 0,
-        "leads_found": 0,
-        "created_at": datetime.utcnow().isoformat() + "Z",
-        "started_at": None,
-        "finished_at": None,
-        "error": None,
-        "logs": [],
+    })
+
+    if is_cold:
+        # Cold sources need a location — fall back to last scan's location.
+        last_cold = next(
+            (s for s in scans if s.get("type") == "cold" and (s.get("locations") or [])),
+            None,
+        )
+        locations = (last_cold or {}).get("locations") or ["Austin, TX"]
+        niches = (last_cold or {}).get("niches") or ["plumbing"]
+        from backend.routers.cold_outreach import _execute_scan as _exec_cold
+        asyncio.create_task(_exec_cold(scan["id"], {
+            "locations": locations,
+            "niches": niches,
+            "skip_scrapers": [s for s in _KNOWN_COLD_SOURCES if s != name],
+            "skip_audit": False,
+            "fetch_emails": True,
+            "fetch_details": True,
+            "max_results": 50,
+        }))
+    else:
+        from backend.routers.direct_leads import _execute_scan as _exec_direct
+        asyncio.create_task(_exec_direct(scan["id"], {
+            "sources": [name],
+            "keywords": keywords,
+            "max_results": 50,
+        }))
+
+    return {
+        "source": name, "scan_id": scan["id"],
+        "keywords": keywords, "status": "queued",
     }
-    scans.insert(0, scan)
-    _save_scans_dl(scans)
-    asyncio.create_task(_execute_scan(scan_id, {"sources": [name], "keywords": keywords, "max_results": 50}))
-    return {"source": name, "scan_id": scan_id, "keywords": keywords, "status": "queued"}

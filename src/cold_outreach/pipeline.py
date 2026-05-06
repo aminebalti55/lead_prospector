@@ -1,26 +1,31 @@
-"""
-Cold Outreach Pipeline (v2)
+"""Cold-outreach scrape pipeline — Supabase-backed.
 
-Orchestrates the full cold outreach lead generation pipeline:
-scrape -> deduplicate -> audit -> score -> extract emails -> export.
+Per-niche / per-location scrape across YellowPages / Manta / BBB / Yelp /
+Google Maps → dedup against existing cold opportunities → audit + score →
+extract emails (4-layer extractor) → bulk-upsert into the `opportunities`
+table. Returns the list of opportunity IDs written.
 """
+from __future__ import annotations
 
 import logging
-from datetime import datetime
 
-from src.core.scraper_engine import ScraperEngine
-from src.core.models import BusinessLead
-from src.core.config import settings, COLD_OUTPUT_DIR
-from src.core.storage import get_existing_businesses
-from src.cold_outreach.scrapers.yellowpages import YellowPagesScraper
-from src.cold_outreach.scrapers.manta import MantaScraper
-from src.cold_outreach.scrapers.bbb import BBBScraper
-from src.cold_outreach.scrapers.yelp import YelpScraper
-from src.cold_outreach.scrapers.google_maps import GoogleMapsScraper
-from src.cold_outreach.auditor import WebsiteAuditor, ReviewAnalyzer
-from src.cold_outreach.scorer import LeadScorer, create_processed_lead
+from src.cold_outreach.auditor import WebsiteAuditor
 from src.cold_outreach.email_extractor import EmailExtractor
-from src.export.exporter import LeadExporter
+from src.cold_outreach.scorer import LeadScorer, create_processed_lead
+from src.cold_outreach.scrapers.bbb import BBBScraper
+from src.cold_outreach.scrapers.google_maps import GoogleMapsScraper
+from src.cold_outreach.scrapers.manta import MantaScraper
+from src.cold_outreach.scrapers.yellowpages import YellowPagesScraper
+from src.cold_outreach.scrapers.yelp import YelpScraper
+from src.core.config import settings
+from src.core.models import BusinessLead
+from src.core.scraper_engine import ScraperEngine
+
+from backend.services.opportunities_store import (
+    cold_lead_to_row,
+    existing_business_keys,
+    upsert,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +46,6 @@ class ColdOutreachPipeline:
         self.scorer = LeadScorer()
         self.auditor = WebsiteAuditor()
         self.email_extractor = EmailExtractor(self.engine)
-        self.exporter = LeadExporter(output_dir=COLD_OUTPUT_DIR)
 
     async def run(
         self,
@@ -53,11 +57,12 @@ class ColdOutreachPipeline:
         fetch_emails: bool = True,
         fetch_details: bool = True,
         progress_callback=None,
+        scan_id: str | None = None,
     ) -> list[str]:
-        """Run the full cold outreach pipeline. Returns list of output file paths."""
+        """Scrape, score, enrich, and persist. Returns opportunity IDs written."""
         skip = set(skip_scrapers or [])
-        existing = get_existing_businesses()
-        all_output_files: list[str] = []
+        existing = existing_business_keys()
+        all_ids: list[str] = []
 
         for location in locations:
             city, state = self._parse_location(location)
@@ -65,11 +70,9 @@ class ColdOutreachPipeline:
                 if progress_callback:
                     progress_callback(f"Scraping {niche} in {city}, {state}...")
 
-                # 1. Scrape from all sources, across every keyword variant in
-                # the niche. Google/Yelp use category IDs internally so they
-                # only need one canonical pass; YP/BBB/Manta search by free
-                # text and benefit from each variant ("plumber" misses leads
-                # that "drain cleaning" or "pipe repair" find).
+                # 1. Scrape every keyword variant per non-category source.
+                # Google/Yelp use category IDs internally; YP/BBB/Manta search
+                # by free text and benefit from each variant.
                 raw_leads: list[BusinessLead] = []
                 niche_keywords = settings.search.niches.get(niche, [niche]) or [niche]
                 category_sources = {"google_maps", "yelp"}
@@ -79,14 +82,11 @@ class ColdOutreachPipeline:
                         continue
                     try:
                         scraper = cls(self.engine)
-                        # Category-driven sources only need the canonical term once.
                         terms = (
                             niche_keywords[:1]
                             if name in category_sources
                             else niche_keywords
                         )
-                        # Each keyword gets full max_results breadth; dedup
-                        # collapses overlaps across variants.
                         for search_term in terms:
                             leads = await scraper.search(
                                 search_term, city, state, max_results
@@ -98,11 +98,15 @@ class ColdOutreachPipeline:
                     except Exception as e:
                         logger.error(f"[{name}] Scraper failed: {e}")
 
-                # 2. Deduplicate
+                # 2. Deduplicate against existing + within-batch.
                 unique_leads = self._deduplicate(raw_leads, existing)
                 logger.info(f"Unique leads after dedup: {len(unique_leads)}")
 
-                # 3. Fetch details (websites) if requested
+                # Track within-run keys so subsequent niches/locations don't re-add.
+                for lead in unique_leads:
+                    existing.add(self._lead_key(lead))
+
+                # 3. Fetch details (website URLs) for sources that gate them.
                 if fetch_details:
                     for scraper_name, cls in SCRAPER_CLASSES.items():
                         if scraper_name in skip:
@@ -120,11 +124,9 @@ class ColdOutreachPipeline:
                                     except Exception:
                                         pass
 
-                # 4. Audit + Score
-                processed: list = []
-                # Keep BusinessLead alongside ProcessedLead so step 5 can pass
-                # detail_url + business name into the email extractor's Layer 4.
-                pairs: list[tuple] = []
+                # 4. Audit + score → ProcessedLead. Pair with BusinessLead so
+                # step 5's email extractor can pass detail_url + name.
+                pairs: list[tuple[BusinessLead, object]] = []
                 for lead in unique_leads:
                     audit_result = None
                     if not skip_audit and lead.website:
@@ -134,18 +136,13 @@ class ColdOutreachPipeline:
                             pass
 
                     scoring = self.scorer.score_business(
-                        website_audit=(
-                            audit_result.__dict__ if audit_result else None
-                        ),
+                        website_audit=audit_result.__dict__ if audit_result else None,
                         rating=lead.rating,
                         review_count=lead.review_count or 0,
                         has_website=bool(lead.website),
                     )
 
-                    pl = create_processed_lead(
-                        scoring_result=scoring, niche=niche
-                    )
-                    # Copy fields from BusinessLead
+                    pl = create_processed_lead(scoring_result=scoring, niche=niche)
                     pl.name = lead.name
                     pl.address = lead.address or ""
                     pl.city = lead.city
@@ -160,13 +157,9 @@ class ColdOutreachPipeline:
                         pl.yelp_rating = lead.rating
                         pl.yelp_review_count = lead.review_count or 0
 
-                    processed.append(pl)
                     pairs.append((lead, pl))
 
-                # 5. Extract emails if requested. Layer 4 of the extractor
-                # uses detail_url + business name so SMBs without an email
-                # on their website can still be discovered via the directory
-                # profile page or DDG SERP.
+                # 5. Email extraction (4-layer).
                 if fetch_emails:
                     found = 0
                     for lead, pl in pairs:
@@ -184,37 +177,50 @@ class ColdOutreachPipeline:
                             pl.email_source = result.source
                             pl.email_confidence = result.confidence
                             found += 1
-                    logger.info(f"Email extraction: {found}/{len(pairs)} leads got an email")
-
-                # 6. Export
-                if processed:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"{niche}_{city}_{state}_{timestamp}"
-                    paths = self.exporter.export(
-                        processed, filename, format="xlsx"
+                    logger.info(
+                        f"Email extraction: {found}/{len(pairs)} leads got an email"
                     )
-                    all_output_files.extend([str(p) for p in paths])
-                    logger.info(f"Exported {len(processed)} leads to {paths}")
 
-        return all_output_files
+                # 6. Persist to Supabase.
+                if pairs:
+                    rows = [
+                        cold_lead_to_row(lead, pl, niche=niche, scan_id=scan_id)
+                        for lead, pl in pairs
+                    ]
+                    upsert(rows)
+                    logger.info(
+                        f"Persisted {len(rows)} cold leads "
+                        f"({niche} / {city}, {state}) to Supabase"
+                    )
+                    all_ids.extend(r["id"] for r in rows)
+
+        return all_ids
+
+    # ------------------------------------------------------------------
 
     def _parse_location(self, location: str) -> tuple[str, str]:
-        """Parse 'City, ST' into (city, state)."""
         parts = [p.strip() for p in location.split(",")]
         city = parts[0] if parts else ""
         state = parts[1] if len(parts) > 1 else ""
         return city, state
 
+    @staticmethod
+    def _lead_key(lead: BusinessLead) -> str:
+        return (
+            f"{(lead.name or '').strip().lower()}|"
+            f"{(lead.city or '').strip().lower()}|"
+            f"{(lead.state or '').strip().lower()}"
+        )
+
     def _deduplicate(
         self, leads: list[BusinessLead], existing: set[str]
     ) -> list[BusinessLead]:
-        """Remove duplicates based on name|city|state."""
         seen = set(existing)
         unique: list[BusinessLead] = []
         for lead in leads:
             if lead.is_sponsored:
                 continue
-            key = f"{lead.name.lower().strip()}|{lead.city.lower().strip()}|{lead.state.lower().strip()}"
+            key = self._lead_key(lead)
             if key not in seen:
                 seen.add(key)
                 unique.append(lead)

@@ -14,20 +14,14 @@ from dotenv import load_dotenv
 # Load .env file
 load_dotenv()
 
-# Project paths
+# Project paths. Persistence is now Supabase — local dirs are for runtime
+# scratch only (logs, scraper cache).
 PROJECT_ROOT = Path(__file__).parent.parent.parent  # src/core/ -> src/ -> lead_prospector/
 DATA_DIR = PROJECT_ROOT / "data"
-OUTPUT_DIR = PROJECT_ROOT / "output"
 LOGS_DIR = PROJECT_ROOT / "logs"
-COLD_OUTPUT_DIR = OUTPUT_DIR / "cold"
-DIRECT_OUTPUT_DIR = OUTPUT_DIR / "direct"
 
-# Ensure directories exist
 DATA_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
-COLD_OUTPUT_DIR.mkdir(exist_ok=True)
-DIRECT_OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 class APISettings(BaseSettings):

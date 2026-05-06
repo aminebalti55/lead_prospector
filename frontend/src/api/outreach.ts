@@ -32,3 +32,45 @@ export function useSendOutreach() {
       }),
   });
 }
+
+export interface BulkRecipient {
+  opportunity_id: string;
+  opportunity_type: "direct" | "cold";
+  source_file: string;
+  raw_lead_id: string;
+  current_stage: string;
+  to_email: string;
+  to_name: string;
+  variables?: Record<string, string>;
+}
+
+export interface OutreachBulkSendBody {
+  template_id: string;
+  recipients: BulkRecipient[];
+  delay_seconds?: number;
+}
+
+export interface BulkSendResult {
+  opportunity_id: string;
+  to_email: string;
+  success: boolean;
+  message: string;
+  stage_advanced: boolean;
+}
+
+export interface OutreachBulkSendResponse {
+  sent: number;
+  failed: number;
+  results: BulkSendResult[];
+}
+
+export function useBulkSendOutreach() {
+  return useMutation<OutreachBulkSendResponse, Error, OutreachBulkSendBody>({
+    mutationFn: (body) =>
+      apiFetch("/outreach/bulk_send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+  });
+}

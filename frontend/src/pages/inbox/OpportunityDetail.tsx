@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { ExternalLink, Mail, Phone, MapPin, Calendar } from "lucide-react";
 import { Opportunity, Stage } from "../../types/opportunity";
 import { Button, Pill, MoneyValue, StatusDot, Card } from "../../design/primitives";
 import { useUpdateStage } from "../../api/opportunities";
+import { SendTemplateModal } from "./SendTemplateModal";
 
 const STAGES: Stage[] = ["new", "researching", "contacted", "replied", "meeting", "won", "lost"];
 
@@ -11,6 +13,7 @@ interface Props {
 
 export function OpportunityDetail({ opp }: Props) {
   const updateStage = useUpdateStage();
+  const [showSend, setShowSend] = useState(false);
 
   return (
     <div className="flex-1 overflow-auto p-6 flex flex-col gap-4">
@@ -164,7 +167,9 @@ export function OpportunityDetail({ opp }: Props) {
             Reply now
           </Button>
         )}
-        <Button variant="secondary">Send template</Button>
+        <Button variant="secondary" onClick={() => setShowSend(true)}>
+          Send template
+        </Button>
         <Button
           variant="ghost"
           onClick={() => updateStage.mutate({ id: opp.id, stage: "lost" })}
@@ -172,6 +177,10 @@ export function OpportunityDetail({ opp }: Props) {
           Dismiss
         </Button>
       </div>
+
+      {showSend && (
+        <SendTemplateModal recipients={[opp]} onClose={() => setShowSend(false)} />
+      )}
     </div>
   );
 }

@@ -50,7 +50,7 @@ class ColdOutreachPipeline:
         max_results: int = 20,
         skip_scrapers: list[str] | None = None,
         skip_audit: bool = False,
-        fetch_emails: bool = False,
+        fetch_emails: bool = True,
         fetch_details: bool = True,
         progress_callback=None,
     ) -> list[str]:
@@ -121,7 +121,10 @@ class ColdOutreachPipeline:
                                         pass
 
                 # 4. Audit + Score
-                processed = []
+                processed: list = []
+                # Keep BusinessLead alongside ProcessedLead so step 5 can pass
+                # detail_url + business name into the email extractor's Layer 4.
+                pairs: list[tuple] = []
                 for lead in unique_leads:
                     audit_result = None
                     if not skip_audit and lead.website:
@@ -158,16 +161,30 @@ class ColdOutreachPipeline:
                         pl.yelp_review_count = lead.review_count or 0
 
                     processed.append(pl)
+                    pairs.append((lead, pl))
 
-                # 5. Extract emails if requested
+                # 5. Extract emails if requested. Layer 4 of the extractor
+                # uses detail_url + business name so SMBs without an email
+                # on their website can still be discovered via the directory
+                # profile page or DDG SERP.
                 if fetch_emails:
-                    for pl in processed:
-                        if pl.website and not pl.email:
-                            result = self.email_extractor.extract(pl.website)
-                            if result.email:
-                                pl.email = result.email
-                                pl.email_source = result.source
-                                pl.email_confidence = result.confidence
+                    found = 0
+                    for lead, pl in pairs:
+                        if pl.email:
+                            continue
+                        if not pl.website and not lead.detail_url:
+                            continue
+                        result = await self.email_extractor.extract_async(
+                            pl.website,
+                            business_name=pl.name,
+                            detail_url=lead.detail_url or "",
+                        )
+                        if result.email:
+                            pl.email = result.email
+                            pl.email_source = result.source
+                            pl.email_confidence = result.confidence
+                            found += 1
+                    logger.info(f"Email extraction: {found}/{len(pairs)} leads got an email")
 
                 # 6. Export
                 if processed:

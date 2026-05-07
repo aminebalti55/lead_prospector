@@ -10,9 +10,12 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string) => void;
   loading: boolean;
+  /** When `embedded`, skip the outer width/border container so a parent
+   * (like InboxPage with category tabs above the list) can lay it out. */
+  embedded?: boolean;
 }
 
-export function OpportunityList({ items, selectedId, onSelect, loading }: Props) {
+export function OpportunityList({ items, selectedId, onSelect, loading, embedded }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [showBulkSend, setShowBulkSend] = useState(false);
 
@@ -45,8 +48,12 @@ export function OpportunityList({ items, selectedId, onSelect, loading }: Props)
     (o) => o.contact_email && o.contact_email.includes("@"),
   ).length;
 
+  const containerClass = embedded
+    ? "flex-1 bg-[var(--color-bg)] flex flex-col min-h-0"
+    : "w-[380px] shrink-0 bg-[var(--color-bg)] border-r border-[var(--color-border)] flex flex-col";
+
   return (
-    <div className="w-[380px] shrink-0 bg-[var(--color-bg)] border-r border-[var(--color-border)] flex flex-col">
+    <div className={containerClass}>
       <div className="h-9 px-3 flex items-center justify-between border-b border-[var(--color-border)]">
         <span className="text-[11px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium">
           {loading ? "Loading…" : `${items.length} opportunities`}

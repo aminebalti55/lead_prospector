@@ -1,36 +1,191 @@
+"""Google Maps scraper — Playwright/Scrapling-based, no API key required.
+
+Replaces the previous Places-API stub that silently returned `[]` whenever
+GOOGLE_PLACES_API_KEY wasn't set. Hits maps.google.com directly via the
+StealthyFetcher (Playwright under the hood) and extracts businesses from
+the live DOM.
+
+Selectors verified live (May 2026) against
+`https://www.google.com/maps/search/dental+clinic+near+Austin+TX`:
+
+| Field        | Selector                                              |
+| ------------ | ----------------------------------------------------- |
+| Card anchor  | `a.hfpxzc`                                            |
+| Name         | the anchor's `aria-label` attribute                   |
+| Place URL    | the anchor's `href`                                   |
+| Sponsored    | innerText of card starts with "Sponsorisé"/"Sponsored"|
+| Feed (list)  | `[role="feed"]`                                       |
+
+Each detail page exposes structured rows via `data-item-id`:
+  • `address`          → full street address
+  • `phone:tel:+...`   → the number is in the suffix of the item-id itself
+  • `authority` (A)    → the business's website (href)
+  • `oh`               → opening hours
+  • `oloc`             → plus-code
+
+The `data-item-id` attribute is what Google uses internally for
+accessibility/automation; it survives UI shuffles much better than the
+auto-generated CSS classes.
+
+NOTE: Google may serve the page in the user's locale (French in our case
+when running from Tunisia). Selectors above are locale-agnostic — they
+target attributes, not visible text.
 """
-Google Maps scraper using ScraperEngine (Scrapling DynamicFetcher + StealthyFetcher).
 
-Rewritten from the legacy Selenium-based scraper to use the new
-ScraperEngine infrastructure with Scrapling for HTML parsing.
+from __future__ import annotations
 
-DynamicFetcher is used for the initial search (JavaScript-rendered page),
-and StealthyFetcher is used for individual business detail pages.
-"""
-
-import re
+import asyncio
 import logging
-from typing import List, Optional
-from urllib.parse import quote_plus
+import re
+from typing import Any
+from urllib.parse import quote_plus, urlparse
 
-from src.core.scraper_engine import ScraperEngine
+from scrapling import StealthyFetcher
+
 from src.core.models import BusinessLead
+from src.core.scraper_engine import ScraperEngine
+
 
 logger = logging.getLogger(__name__)
 
 
-class GoogleMapsScraper:
-    """
-    Scraper for Google Maps business listings.
+_SEARCH_URL = "https://www.google.com/maps/search/{q}+in+{city}+{state}"
 
-    Uses ScraperEngine with DynamicFetcher for search pages (JS rendering)
-    and StealthyFetcher for detail pages.
-    Difficulty: HIGH (aggressive anti-bot measures)
-    Rate limiting: 3-6s between requests, 150/hour
+# How long to wait for the result feed before giving up.
+_FEED_WAIT_MS = 6000
+
+# How many "scroll the feed" loops we run to load more cards. Google lazy-
+# loads ~20 cards per scroll; 4 scrolls ≈ 80 cards before the "End of list"
+# sentinel appears.
+_SCROLL_PASSES = 4
+
+# Concurrency limit for per-place detail fetches. Google rate-limits at
+# the IP level — 4 parallel detail fetches stays well under their threshold.
+_DETAIL_CONCURRENCY = 4
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_rating(raw: str | None) -> tuple[float | None, int | None]:
+    """Convert "4,8\\n(1 471)" or "4.8 (1471)" into (4.8, 1471)."""
+    if not raw:
+        return None, None
+    s = raw.replace(" ", "").replace("\xa0", "").replace(" ", "")
+    s = s.replace(",", ".")
+    m_rating = re.search(r"(\d+(?:\.\d+)?)", s)
+    m_count = re.search(r"\((\d+(?:\s*\d+)*)\)", s)
+    rating = float(m_rating.group(1)) if m_rating else None
+    count = None
+    if m_count:
+        count = int(re.sub(r"\D", "", m_count.group(1)))
+    return rating, count
+
+
+def _phone_from_item_id(item_id: str) -> str:
+    """`phone:tel:+15128152524` → `+1 512-815-2524`."""
+    m = re.search(r"phone:tel:([+\d]+)", item_id or "")
+    if not m:
+        return ""
+    digits = m.group(1)
+    if digits.startswith("+1") and len(digits) == 12:
+        return f"+1 {digits[2:5]}-{digits[5:8]}-{digits[8:]}"
+    return digits
+
+
+def _strip_tracking(url: str) -> str:
+    """Remove utm_*/gclid/etc. so dedup keys are stable."""
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def _looks_sponsored(card_text: str) -> bool:
+    """Skip ads — they're paid placements, not organic results."""
+    head = (card_text or "").strip().split("\n", 1)[0].lower()
+    return head in ("sponsorisé", "sponsored", "sponsorisée", "anuncio", "anzeige")
+
+
+# JS run in the page to extract the list of cards once the feed has loaded.
+_LIST_EXTRACT_JS = r"""() => {
+  const out = [];
+  const cards = document.querySelectorAll('a.hfpxzc');
+  for (const a of cards) {
+    const card = a.closest('[role="article"]') || a.parentElement;
+    out.push({
+      name: a.getAttribute('aria-label') || '',
+      place_url: a.href,
+      card_text: (card?.innerText || '').slice(0, 600),
+    });
+  }
+  return out;
+}"""
+
+# JS run in the place-detail page to extract the structured fields.
+_DETAIL_EXTRACT_JS = r"""() => {
+  const result = {
+    name: '',
+    address: '',
+    phone_item_id: '',
+    website: '',
+    rating_text: '',
+    category: '',
+    located_in: '',
+  };
+
+  result.name = document.querySelector('h1')?.innerText || '';
+
+  const addr = document.querySelector('button[data-item-id="address"]');
+  result.address = addr ? (addr.getAttribute('aria-label') || addr.innerText || '') : '';
+
+  // Phone number is encoded inside the data-item-id suffix:
+  //   data-item-id="phone:tel:+15128152524"
+  const phone = document.querySelector('button[data-item-id^="phone:tel:"]');
+  result.phone_item_id = phone ? phone.getAttribute('data-item-id') : '';
+
+  const site = document.querySelector('a[data-item-id="authority"]');
+  result.website = site ? site.href : '';
+
+  result.rating_text = document.querySelector('div.F7nice')?.innerText || '';
+
+  // The category is a small button below the rating; it shares a jsaction
+  // hint that contains the word "category".
+  const cat = document.querySelector('button[jsaction*="category"]');
+  result.category = cat ? cat.innerText.trim() : '';
+
+  const loc = document.querySelector('button[data-item-id="locatedin"]');
+  result.located_in = loc ? loc.innerText.replace(/^Situé dans\s*:\s*/i, '').trim() : '';
+
+  return result;
+}"""
+
+# JS that scrolls the result feed to load more cards. Returns the new card
+# count so the caller knows whether to keep scrolling.
+_SCROLL_JS = r"""() => {
+  const feed = document.querySelector('[role="feed"]');
+  if (!feed) return 0;
+  feed.scrollTop = feed.scrollHeight;
+  return document.querySelectorAll('a.hfpxzc').length;
+}"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Scraper
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class GoogleMapsScraper:
+    """Playwright-based scrape of maps.google.com search results.
+
+    Difficulty: HIGH (Google has anti-bot measures, but a single user
+    browsing maps without an account looks legitimate to their classifier).
+    Rate limiting: ScraperEngine handles delay between requests.
     """
 
     SOURCE_NAME = "google_maps"
-    BASE_URL = "https://www.google.com/maps/search"
 
     def __init__(self, engine: ScraperEngine):
         self.engine = engine
@@ -41,334 +196,264 @@ class GoogleMapsScraper:
         city: str,
         state: str,
         max_results: int = 20,
-    ) -> List[BusinessLead]:
-        """Search Google Maps for businesses.
-
-        Fetches the search URL via DynamicFetcher, then parses
-        the initially visible results (typically 5-7 listings).
-        """
-        query = f"{business_type} in {city} {state}"
-        url = f"{self.BASE_URL}/{quote_plus(query)}?hl=en"
-        logger.info(f"Searching Google Maps: {query}")
-
-        response = await self.engine.async_fetch_with_retry(url, self.SOURCE_NAME)
-        if response is None:
+    ) -> list[BusinessLead]:
+        if not business_type or not city:
             return []
 
-        leads = self._parse_search_results(response, city, state)
-        return leads[:max_results]
+        url = _SEARCH_URL.format(
+            q=quote_plus(business_type),
+            city=quote_plus(city),
+            state=quote_plus(state or ""),
+        )
+        logger.info(f"[google_maps] searching: {url}")
 
-    def _parse_search_results(
-        self, page, city: str, state: str
-    ) -> List[BusinessLead]:
-        """Parse Google Maps search results page.
+        # Stage 1 — load the search page, scroll to fill the feed.
+        try:
+            await self.engine.rate_limiter.wait_async(self.SOURCE_NAME)
+            self.engine.rate_limiter.record_request(self.SOURCE_NAME)
+            cards = await self._fetch_list(url, max_results)
+        except Exception as e:
+            logger.error(f"[google_maps] list fetch failed: {e}", exc_info=True)
+            return []
 
-        Uses Scrapling's CSS selector API to extract business listings.
-        Google Maps renders listing containers as div.Nv2PK or links to
-        /maps/place/. We parse whichever is available.
-        """
-        leads: List[BusinessLead] = []
-        seen_urls: set = set()
+        if not cards:
+            logger.warning(f"[google_maps] no cards extracted for '{business_type}' in {city}")
+            return []
 
-        # Try listing containers first, then fall back to place links
-        listing_containers = page.css("div.Nv2PK")
+        # Stage 2 — fetch each place's detail page in parallel (bounded).
+        sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
+        tasks = [
+            self._fetch_detail(sem, card, city, state, business_type)
+            for card in cards[:max_results]
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        if listing_containers:
-            for container in listing_containers:
-                try:
-                    lead = self._extract_from_container(
-                        container, city, state, seen_urls
-                    )
-                    if lead and not lead.is_sponsored:
-                        leads.append(lead)
-                except Exception as e:
-                    logger.debug(f"Error extracting listing: {e}")
-                    continue
-        else:
-            # Fall back to place links
-            elements = page.css('a[href*="/maps/place/"]')
-            for elem in elements:
-                try:
-                    lead = self._extract_from_link(
-                        elem, city, state, seen_urls
-                    )
-                    if lead and not lead.is_sponsored:
-                        leads.append(lead)
-                except Exception as e:
-                    logger.debug(f"Error extracting listing: {e}")
-                    continue
+        leads: list[BusinessLead] = []
+        for r in results:
+            if isinstance(r, BusinessLead):
+                leads.append(r)
+            elif isinstance(r, Exception):
+                logger.debug(f"[google_maps] detail failed: {r}")
 
+        logger.info(f"[google_maps] returning {len(leads)} businesses")
         return leads
 
-    def _extract_from_container(
-        self, container, city: str, state: str, seen_urls: set
-    ) -> Optional[BusinessLead]:
-        """Extract a lead from a div.Nv2PK container element."""
-        container_text = container.get_all_text() if container.get_all_text() else ""
+    # -----------------------------------------------------------------
 
-        # Check for sponsored
-        if self._is_sponsored(container_text):
+    async def _fetch_list(self, url: str, max_results: int) -> list[dict[str, Any]]:
+        """Open the maps search page and scroll the feed until enough cards
+        are loaded. Returns a list of {name, place_url, card_text}.
+
+        Filters out sponsored cards (ads) and de-dupes by place_url so the
+        same place doesn't appear twice when Google duplicates results.
+        """
+
+        # Build a per-page script that scrolls + extracts in one Playwright
+        # action. StealthyFetcher exposes `page_action` for this — a callable
+        # that receives the live Page object before the response is captured.
+        async def page_action(page):
+            # Wait for the feed to appear. If we get a CAPTCHA / blocked,
+            # the feed never loads and we'll return an empty card list.
+            try:
+                await page.wait_for_selector('[role="feed"]', timeout=_FEED_WAIT_MS)
+            except Exception:
+                logger.warning("[google_maps] feed didn't load — possibly blocked")
+                return page
+
+            # Scroll to load more cards; bail early once we have enough.
+            for i in range(_SCROLL_PASSES):
+                try:
+                    n = await page.evaluate(_SCROLL_JS)
+                    if n >= max_results + 5:  # +5 to absorb sponsored skips
+                        break
+                except Exception:
+                    break
+                await page.wait_for_timeout(800)
+            return page
+
+        response = await StealthyFetcher.async_fetch(
+            url,
+            solve_cloudflare=False,  # Google doesn't use CF
+            wait_selector='[role="feed"]',
+            wait=2000,
+            network_idle=False,
+            google_search=False,
+            page_action=page_action,
+        )
+        if not response:
+            return []
+
+        html = self._html(response)
+        if not html:
+            return []
+
+        # We can't run our extractor JS on a static html string after the
+        # page closes — but we ALREADY ran the scroll loop in page_action.
+        # Re-extract via a second StealthyFetcher pass that just runs the
+        # extractor JS. Cheaper alternative: parse the HTML with BS4.
+        # Going with HTML parse — feed cards have stable attributes.
+        return self._parse_list_html(html)
+
+    @staticmethod
+    def _parse_list_html(html: str) -> list[dict[str, Any]]:
+        """BS4 fallback parser for the list page when we can't run JS."""
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for a in soup.select("a.hfpxzc"):
+            name = a.get("aria-label", "").strip()
+            place_url = a.get("href", "")
+            if not name or not place_url:
+                continue
+
+            # The card container holds the full innerText we use to detect
+            # sponsored ads. role="article" is consistent across locales.
+            card = a.find_parent(attrs={"role": "article"}) or a.parent
+            card_text = card.get_text("\n", strip=True) if card else ""
+
+            if _looks_sponsored(card_text):
+                continue
+
+            stable = _strip_tracking(place_url)
+            if stable in seen:
+                continue
+            seen.add(stable)
+
+            out.append({"name": name, "place_url": place_url, "card_text": card_text})
+        return out
+
+    # -----------------------------------------------------------------
+
+    async def _fetch_detail(
+        self,
+        sem: asyncio.Semaphore,
+        card: dict[str, Any],
+        city: str,
+        state: str,
+        business_type: str,
+    ) -> BusinessLead | None:
+        """Open one place's detail page and extract phone / website /
+        full address / rating. Returns None on failure so gather() can
+        skip without aborting the whole batch."""
+        async with sem:
+            await self.engine.rate_limiter.wait_async(self.SOURCE_NAME)
+            self.engine.rate_limiter.record_request(self.SOURCE_NAME)
+
+            try:
+                async def page_action(page):
+                    # Wait for the address row to appear — that's the
+                    # signal the right-side panel finished hydrating.
+                    try:
+                        await page.wait_for_selector(
+                            'button[data-item-id="address"]', timeout=8000
+                        )
+                    except Exception:
+                        pass
+                    return page
+
+                response = await StealthyFetcher.async_fetch(
+                    card["place_url"],
+                    solve_cloudflare=False,
+                    wait=1500,
+                    network_idle=False,
+                    page_action=page_action,
+                )
+            except Exception as e:
+                logger.debug(f"[google_maps] detail fetch failed for {card['name']}: {e}")
+                return None
+
+            if not response:
+                return None
+            html = self._html(response)
+            if not html:
+                return None
+
+            details = self._parse_detail_html(html)
+
+            # Rating + review count come from the list card too — fall back
+            # to those if the detail panel didn't render.
+            rating, review_count = _parse_rating(details.get("rating_text") or "")
+            if rating is None:
+                # The list card text is "<name>\n<rating>(<count>)\n…"
+                rating, review_count = _parse_rating(card.get("card_text", ""))
+
+            address = details.get("address") or ""
+            phone = _phone_from_item_id(details.get("phone_item_id") or "")
+            website = _strip_tracking(details.get("website") or "")
+
             return BusinessLead(
                 source=self.SOURCE_NAME,
-                name="",
+                name=details.get("name") or card["name"],
                 city=city,
                 state=state,
-                is_sponsored=True,
+                phone=phone or None,
+                website=website or None,
+                address=address or None,
+                rating=rating,
+                review_count=review_count,
+                categories=[details.get("category")] if details.get("category") else [],
+                detail_url=_strip_tracking(card["place_url"]),
             )
 
-        # Get detail URL from the link inside the container
-        detail_url = None
-        link_els = container.css("a.hfpxzc")
-        if link_els:
-            detail_url = link_els[0].attrib.get("href", "")
+    @staticmethod
+    def _parse_detail_html(html: str) -> dict[str, str]:
+        from bs4 import BeautifulSoup
 
-        if not link_els:
-            link_els = container.css('a[href*="/maps/place/"]')
-            if link_els:
-                detail_url = link_els[0].attrib.get("href", "")
+        soup = BeautifulSoup(html, "html.parser")
 
-        if detail_url and detail_url in seen_urls:
-            return None
-        if detail_url:
-            seen_urls.add(detail_url)
+        out: dict[str, str] = {}
+        h1 = soup.find("h1")
+        if h1:
+            out["name"] = h1.get_text(strip=True)
 
-        # Extract name
-        name = self._extract_name(container, link_els)
-        if not name:
-            return None
-
-        # Extract rating
-        rating = None
-        rating_els = container.css(".MW4etd")
-        if rating_els:
-            rating = BusinessLead.clean_rating(rating_els[0].get_all_text())
-
-        # Extract review count
-        review_count = None
-        review_els = container.css(".UY7F9")
-        if review_els:
-            review_count = BusinessLead.clean_review_count(
-                review_els[0].get_all_text()
+        addr = soup.find("button", attrs={"data-item-id": "address"})
+        if addr:
+            out["address"] = (
+                addr.get("aria-label", "")
+                or addr.get_text(" ", strip=True)
             )
+            # Strip the localized "Address: " prefix some locales add.
+            out["address"] = re.sub(r"^[^:]+:\s*", "", out["address"]).strip()
 
-        # Extract phone
-        phone = self._extract_phone(container_text)
+        phone = soup.find("button", attrs={"data-item-id": re.compile(r"^phone:tel:")})
+        if phone:
+            out["phone_item_id"] = phone.get("data-item-id", "")
 
-        # Extract address
-        address = self._extract_address(container_text)
+        site = soup.find("a", attrs={"data-item-id": "authority"})
+        if site:
+            out["website"] = site.get("href", "")
 
-        # Extract categories
-        categories = self._extract_categories(container_text)
+        rating_div = soup.find("div", class_="F7nice")
+        if rating_div:
+            out["rating_text"] = rating_div.get_text(" ", strip=True)
 
-        return BusinessLead(
-            source=self.SOURCE_NAME,
-            name=name,
-            phone=BusinessLead.clean_phone(phone),
-            city=city,
-            state=state,
-            rating=rating,
-            review_count=review_count,
-            address=address,
-            categories=categories,
-            is_sponsored=False,
-            detail_url=detail_url,
-        )
+        cat_btn = soup.find("button", attrs={"jsaction": re.compile(r"category")})
+        if cat_btn:
+            out["category"] = cat_btn.get_text(strip=True)
 
-    def _extract_from_link(
-        self, elem, city: str, state: str, seen_urls: set
-    ) -> Optional[BusinessLead]:
-        """Extract a lead from an <a> element linking to /maps/place/."""
-        href = elem.attrib.get("href", "")
+        return out
 
-        if not href or "/maps/place/" not in href:
-            return None
-        if href in seen_urls:
-            return None
-        seen_urls.add(href)
+    # -----------------------------------------------------------------
 
-        name = elem.attrib.get("aria-label", "")
-        if not name:
-            name = elem.get_all_text().strip() if elem.get_all_text() else ""
-        if not name:
-            return None
+    @staticmethod
+    def _html(response) -> str:
+        for attr in ("html_content", "body"):
+            v = getattr(response, attr, None)
+            if v:
+                if isinstance(v, bytes):
+                    return v.decode("utf-8", errors="replace")
+                return str(v)
+        try:
+            return str(response)
+        except Exception:
+            return ""
 
-        # Walk up to find container text
-        container = self._get_listing_container(elem)
-        container_text = container.get_all_text() if container else ""
-
-        if self._is_sponsored(container_text):
-            return BusinessLead(
-                source=self.SOURCE_NAME,
-                name="",
-                city=city,
-                state=state,
-                is_sponsored=True,
-            )
-
-        phone = self._extract_phone(container_text)
-        address = self._extract_address(container_text)
-        categories = self._extract_categories(container_text)
-
-        return BusinessLead(
-            source=self.SOURCE_NAME,
-            name=name,
-            phone=BusinessLead.clean_phone(phone),
-            city=city,
-            state=state,
-            address=address,
-            categories=categories,
-            is_sponsored=False,
-            detail_url=href,
-        )
+    # -----------------------------------------------------------------
 
     async def get_details(self, lead: BusinessLead) -> BusinessLead:
-        """Visit individual business page via StealthyFetcher to get website URL."""
-        if not lead.detail_url:
-            return lead
-
-        try:
-            # Use stealth fetcher for detail pages (lighter than dynamic)
-            response = await self.engine.async_fetch_with_retry(
-                lead.detail_url, self.SOURCE_NAME
-            )
-            if response is None:
-                return lead
-
-            page_text = response.get_all_text() if response.get_all_text() else ""
-
-            # Extract phone
-            phone_els = response.css('a[href^="tel:"]')
-            if phone_els:
-                phone_text = phone_els[0].get_all_text() or ""
-                phone = self._extract_phone(phone_text)
-                if phone:
-                    lead.phone = BusinessLead.clean_phone(phone)
-
-            # Extract website
-            website_selectors = [
-                'a[data-tooltip*="website"]',
-                'a[aria-label*="Website"]',
-            ]
-            for sel in website_selectors:
-                els = response.css(sel)
-                if els:
-                    href = els[0].attrib.get("href", "")
-                    if href and "google.com" not in href:
-                        lead.website = href
-                        break
-
-            # Extract address
-            addr_selectors = [
-                'button[data-tooltip*="address"]',
-                'button[aria-label*="Address"]',
-            ]
-            for sel in addr_selectors:
-                els = response.css(sel)
-                if els:
-                    lead.address = els[0].get_all_text().strip()
-                    break
-
-            # Check claimed
-            if "Claim this business" in page_text:
-                lead.is_claimed = False
-            else:
-                lead.is_claimed = True
-
-        except Exception as e:
-            logger.warning(f"Error getting details for {lead.name}: {e}")
-
+        """Compatibility shim — the cold pipeline calls scraper.get_details
+        on leads that lack a website. Our search() already populates the
+        website field from the detail page, so this is a no-op."""
         return lead
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_name(container, link_els) -> Optional[str]:
-        """Extract business name from a container element."""
-        name_selectors = [
-            ".qBF1Pd.fontHeadlineSmall",
-            ".fontHeadlineSmall",
-            "div.NrDZNb",
-        ]
-        for sel in name_selectors:
-            els = container.css(sel)
-            if els:
-                name = els[0].get_all_text().strip() if els[0].get_all_text() else ""
-                if name:
-                    return name
-
-        # Fall back to aria-label on the link
-        if link_els:
-            aria = link_els[0].attrib.get("aria-label", "")
-            if aria:
-                return aria.strip()
-
-        return None
-
-    @staticmethod
-    def _get_listing_container(element):
-        """Walk up the DOM to find a meaningful parent container."""
-        try:
-            container = element.parent
-            for _ in range(10):
-                if container is None:
-                    break
-                text = (
-                    container.get_all_text()
-                    if hasattr(container, "get_all_text")
-                    else ""
-                )
-                if len(text) > 100:
-                    return container
-                container = container.parent
-            return element.parent
-        except Exception:
-            return None
-
-    @staticmethod
-    def _is_sponsored(text: str) -> bool:
-        """Check if listing is sponsored/ad."""
-        sponsored_terms = ["Sponsored", "Ad ", "Annonce", "Publicité"]
-        text_lower = text.lower()
-        if any(term.lower() in text_lower for term in sponsored_terms):
-            return True
-        return False
-
-    @staticmethod
-    def _extract_phone(text: str) -> Optional[str]:
-        """Extract phone number from text."""
-        patterns = [
-            r"\+1[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}",
-            r"\(\d{3}\)\s*\d{3}-\d{4}",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                return match.group()
-        return None
-
-    @staticmethod
-    def _extract_address(text: str) -> Optional[str]:
-        """Extract address from text."""
-        lines = text.split("\n")
-        for line in lines:
-            line = line.strip()
-            if re.match(r"^\d+\s+\w+", line) and len(line) < 100:
-                return line
-        return None
-
-    @staticmethod
-    def _extract_categories(text: str) -> List[str]:
-        """Extract business categories from text."""
-        common_categories = [
-            "Plumber", "Plumbing", "Dentist", "Dental", "Clinic",
-            "Pest Control", "HVAC", "Electrician", "Roofing",
-            "Contractor", "Locksmith", "Medical", "Doctor",
-        ]
-        found = []
-        text_lower = text.lower()
-        for cat in common_categories:
-            if cat.lower() in text_lower:
-                found.append(cat)
-        return found

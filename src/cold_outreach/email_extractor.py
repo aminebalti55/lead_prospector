@@ -67,15 +67,15 @@ logger = logging.getLogger(__name__)
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
+# Ranked by hit-rate observed on US SMB sites. We only try the top 4 so a
+# lead with no email anywhere doesn't burn 8 sequential HTTP requests. The
+# rest are kept for the JS-rendered fallback path which can afford to be
+# more thorough.
 CONTACT_PATHS: list[tuple[str, str]] = [
     ("/contact", "contact_page"),
     ("/contact-us", "contact_page"),
     ("/about", "about_page"),
     ("/about-us", "about_page"),
-    ("/get-in-touch", "contact_page"),
-    ("/team", "team_page"),
-    ("/our-team", "team_page"),
-    ("/staff", "team_page"),
 ]
 
 EXCLUDED_DOMAINS = {

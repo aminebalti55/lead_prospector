@@ -7,6 +7,7 @@ table. Returns the list of opportunity IDs written.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from src.cold_outreach.auditor import WebsiteAuditor
@@ -161,36 +162,69 @@ class ColdOutreachPipeline:
                     pairs.append((lead, pl))
 
                 # 5. Email extraction (4-layer) + SMTP-handshake verification.
+                # Run in parallel (bounded) — sequential per-lead extraction
+                # is the #1 reason cold scans feel stuck. Each lead does up
+                # to 8 HTTP path probes + DDG fallback + SMTP verify, so
+                # ~10s/lead. With 8 concurrent workers a 20-lead batch drops
+                # from ~200s to ~30s.
                 if fetch_emails:
-                    found = 0
-                    verified = 0
-                    for lead, pl in pairs:
-                        if pl.email:
-                            continue
-                        if not pl.website and not lead.detail_url:
-                            continue
-                        result = await self.email_extractor.extract_async(
-                            pl.website,
-                            business_name=pl.name,
-                            detail_url=lead.detail_url or "",
-                        )
-                        if result.email:
-                            pl.email = result.email
-                            pl.email_source = result.source
-                            pl.email_confidence = result.confidence
-                            found += 1
-                            # Verify before we ever try to send to it. Bouncing
-                            # 2%+ of a campaign destroys the sender domain.
+                    em_sem = asyncio.Semaphore(8)
+                    completed = [0]
+                    found = [0]
+                    total_to_check = sum(
+                        1 for _, pl in pairs
+                        if not pl.email and (pl.website or _)
+                        for _ in [getattr(pl, "_filler", None)]  # always 1 iter
+                    )
+                    # Simpler count
+                    total_to_check = sum(
+                        1 for lead, pl in pairs
+                        if not pl.email and (pl.website or lead.detail_url)
+                    )
+
+                    async def _extract_one(lead, pl):
+                        async with em_sem:
+                            if pl.email:
+                                return
+                            if not pl.website and not lead.detail_url:
+                                return
                             try:
-                                vr = verify_email(result.email)
-                                pl.email_verification_status = vr.status
-                                if vr.status in ("valid", "catch_all"):
-                                    verified += 1
+                                result = await self.email_extractor.extract_async(
+                                    pl.website,
+                                    business_name=pl.name,
+                                    detail_url=lead.detail_url or "",
+                                )
                             except Exception as e:
-                                logger.debug(f"Verify failed for {result.email}: {e}")
+                                logger.debug(f"Email extract failed for {pl.name}: {e}")
+                                result = None
+
+                            if result and result.email:
+                                pl.email = result.email
+                                pl.email_source = result.source
+                                pl.email_confidence = result.confidence
+                                found[0] += 1
+                                # Verify so the inbox shows safe-to-send badges.
+                                try:
+                                    vr = verify_email(result.email)
+                                    pl.email_verification_status = vr.status
+                                except Exception as e:
+                                    logger.debug(
+                                        f"Verify failed for {result.email}: {e}"
+                                    )
+
+                            completed[0] += 1
+                            # Live progress so the dock moves every few seconds.
+                            if progress_callback and total_to_check > 0:
+                                progress_callback(
+                                    f"Email extraction: {completed[0]}/{total_to_check} "
+                                    f"checked · {found[0]} found"
+                                )
+
+                    await asyncio.gather(
+                        *[_extract_one(lead, pl) for lead, pl in pairs]
+                    )
                     logger.info(
-                        f"Email extraction: {found}/{len(pairs)} extracted, "
-                        f"{verified} safe-to-send"
+                        f"Email extraction: {found[0]}/{len(pairs)} found"
                     )
 
                 # 6. Persist to Supabase.

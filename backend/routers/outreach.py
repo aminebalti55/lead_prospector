@@ -22,8 +22,13 @@ from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 
 from backend.services import settings_store, templates_store
+from backend.services.email_verifier import (
+    is_safe_to_send,
+    verify_and_store,
+)
 from backend.services.opportunities_store import update_stage as update_opp_stage
 from backend.services.supabase_client import get_client
+from backend.services.template_render import render as render_template
 
 
 router = APIRouter(prefix="/api/outreach", tags=["outreach"])
@@ -106,11 +111,37 @@ class OutreachBulkSendResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _substitute(text: str, variables: dict[str, str]) -> str:
-    out = text
-    for k, v in variables.items():
-        out = out.replace("{" + k + "}", str(v))
-    return out
+def _substitute(text: str, variables: dict[str, str], *, seed: str | None = None) -> str:
+    """Render with spintax + variables + fallbacks. `seed` pins the spintax
+    choice per recipient so follow-ups stay consistent."""
+    return render_template(text, variables, seed=seed)
+
+
+def _gate_or_verify(opportunity_id: str, email: str) -> tuple[bool, str]:
+    """Returns (allowed, status). Looks up the cached verification status
+    in opportunities; if missing or stale, runs a fresh verify. Blocks the
+    send when status is invalid / disposable / unknown.
+
+    Order matters: we want to block bouncing addresses BEFORE we burn an
+    SMTP connection on them — that's the entire point of the gate."""
+    client = get_client()
+    resp = (
+        client.table("opportunities")
+        .select("email_verification_status, email_verified_at")
+        .eq("id", opportunity_id)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    cached = rows[0] if rows else {}
+
+    from backend.services.email_verifier import needs_reverify
+    if needs_reverify({**cached, "contact_email": email}):
+        result = verify_and_store(opportunity_id, email)
+        return is_safe_to_send(result.status), result.status
+
+    status = cached.get("email_verification_status") or "unknown"
+    return is_safe_to_send(status), status
 
 
 def _resolve_smtp() -> dict[str, Any]:
@@ -258,9 +289,23 @@ async def send(req: OutreachSendRequest, request: Request) -> OutreachSendRespon
         template_id_for_log = template["id"]
 
     variables = {"sender_name": smtp["sender_name"], **req.variables}
-    subject = _substitute(subject_raw, variables)
-    body_text = _substitute(body_raw, variables)
+    # Pin spintax per opportunity so any follow-up rendered later picks the
+    # same variant — recipients shouldn't see the greeting flip-flop.
+    subject = _substitute(subject_raw, variables, seed=req.opportunity_id)
+    body_text = _substitute(body_raw, variables, seed=req.opportunity_id)
     warnings = _spam_warnings(subject, body_text)
+
+    # Verifier gate — block before we burn an SMTP connection on a bouncer.
+    allowed, vstatus = _gate_or_verify(req.opportunity_id, req.to_email)
+    if not allowed:
+        return OutreachSendResponse(
+            success=False,
+            message=(
+                f"Skipped — email verification status is '{vstatus}'. "
+                "Sending would risk a bounce and damage sender reputation."
+            ),
+            spam_warnings=warnings,
+        )
 
     base_url = str(request.base_url).rstrip("/")
     tracking_token = secrets.token_urlsafe(16)
@@ -359,9 +404,19 @@ async def bulk_send(req: OutreachBulkSendRequest, request: Request) -> OutreachB
                 failed += 1
                 continue
 
+            allowed, vstatus = _gate_or_verify(r.opportunity_id, r.to_email)
+            if not allowed:
+                results.append(BulkSendResult(
+                    opportunity_id=r.opportunity_id, to_email=r.to_email,
+                    success=False,
+                    message=f"Skipped — email is '{vstatus}' (would bounce).",
+                ))
+                failed += 1
+                continue
+
             variables = {"sender_name": smtp["sender_name"], **r.variables}
-            subject = _substitute(template["subject"], variables)
-            body_text = _substitute(template["body"], variables)
+            subject = _substitute(template["subject"], variables, seed=r.opportunity_id)
+            body_text = _substitute(template["body"], variables, seed=r.opportunity_id)
             tracking_token = secrets.token_urlsafe(16)
             body_with_tracking = _wrap_with_tracking(
                 body_text, tracking_token=tracking_token, base_url=base_url,

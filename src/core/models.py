@@ -152,6 +152,7 @@ class ProcessedLead:
     email: str = ""
     email_source: str = ""  # scraper, website, google_search, guessed
     email_confidence: str = ""  # high, medium, low
+    email_verification_status: str = ""  # valid | invalid | catch_all | risky | unknown | disposable
 
     # Source info
     source: str = ""  # google_places, yelp, or both

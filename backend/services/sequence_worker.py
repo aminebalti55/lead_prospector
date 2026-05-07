@@ -27,8 +27,10 @@ from email.mime.text import MIMEText
 from typing import Any
 
 from backend.services import settings_store
+from backend.services.email_verifier import is_safe_to_send, needs_reverify, verify_and_store
 from backend.services.opportunities_store import update_stage as update_opp_stage
 from backend.services.supabase_client import get_client
+from backend.services.template_render import render as render_template
 
 
 logger = logging.getLogger(__name__)
@@ -178,8 +180,11 @@ class SequenceWorker:
         # Pull the lead so we can substitute variables + check stage.
         opp_resp = (
             client.table("opportunities")
-            .select("id, contact_email, contact_name, company_name, niche, "
-                    "city, source, location, stage, lead_subtype")
+            .select(
+                "id, contact_email, contact_name, company_name, niche, "
+                "city, source, location, stage, lead_subtype, "
+                "email_verification_status, email_verified_at"
+            )
             .eq("id", enroll["opportunity_id"])
             .limit(1)
             .execute()
@@ -197,6 +202,27 @@ class SequenceWorker:
         if not opp.get("contact_email"):
             logger.info(
                 f"Skipping enrollment {enroll['id']} — opportunity has no email"
+            )
+            client.table("sequence_enrollments").update({
+                "status": "paused",
+            }).eq("id", enroll["id"]).execute()
+            return
+
+        # Verifier gate — refuse to send to addresses that would bounce.
+        # Pause the enrollment so the user can fix the email then resume.
+        if needs_reverify(opp):
+            verify_and_store(opp["id"], opp["contact_email"])
+            opp = (
+                client.table("opportunities")
+                .select("email_verification_status")
+                .eq("id", opp["id"])
+                .limit(1)
+                .execute()
+            ).data[0] | opp
+        if not is_safe_to_send(opp.get("email_verification_status")):
+            logger.info(
+                f"Pausing enrollment {enroll['id']} — email status "
+                f"{opp.get('email_verification_status')} (would bounce)"
             )
             client.table("sequence_enrollments").update({
                 "status": "paused",
@@ -285,8 +311,10 @@ class SequenceWorker:
             if prev_rows:
                 variables["previous_subject"] = prev_rows[0].get("subject") or ""
 
-        subject = self._sub(template["subject"], variables)
-        body = self._sub(template["body"], variables)
+        # Pin spintax per-opportunity so a recipient gets the same greeting
+        # variant on the initial send AND the follow-ups.
+        subject = render_template(template["subject"], variables, seed=opp["id"])
+        body = render_template(template["body"], variables, seed=opp["id"])
 
         message_id = f"<{uuid.uuid4()}@pulse>"
         tracking_token = secrets.token_urlsafe(16)
@@ -340,9 +368,3 @@ class SequenceWorker:
         )
         return True
 
-    @staticmethod
-    def _sub(text: str, variables: dict[str, str]) -> str:
-        out = text
-        for k, v in variables.items():
-            out = out.replace("{" + k + "}", str(v))
-        return out

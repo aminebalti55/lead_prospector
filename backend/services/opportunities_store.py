@@ -90,6 +90,7 @@ def cold_lead_to_row(
         "contact_phone": business.phone or "",
         "email_source": processed.email_source or "",
         "email_confidence": processed.email_confidence or "",
+        "email_verification_status": processed.email_verification_status or None,
         "score": score,
         "priority": (processed.priority or _priority_from_score(score)),
         "stage": (processed.outreach_status or "new"),

@@ -21,6 +21,7 @@ from src.core.config import settings
 from src.core.models import BusinessLead
 from src.core.scraper_engine import ScraperEngine
 
+from backend.services.email_verifier import verify as verify_email
 from backend.services.opportunities_store import (
     cold_lead_to_row,
     existing_business_keys,
@@ -159,9 +160,10 @@ class ColdOutreachPipeline:
 
                     pairs.append((lead, pl))
 
-                # 5. Email extraction (4-layer).
+                # 5. Email extraction (4-layer) + SMTP-handshake verification.
                 if fetch_emails:
                     found = 0
+                    verified = 0
                     for lead, pl in pairs:
                         if pl.email:
                             continue
@@ -177,8 +179,18 @@ class ColdOutreachPipeline:
                             pl.email_source = result.source
                             pl.email_confidence = result.confidence
                             found += 1
+                            # Verify before we ever try to send to it. Bouncing
+                            # 2%+ of a campaign destroys the sender domain.
+                            try:
+                                vr = verify_email(result.email)
+                                pl.email_verification_status = vr.status
+                                if vr.status in ("valid", "catch_all"):
+                                    verified += 1
+                            except Exception as e:
+                                logger.debug(f"Verify failed for {result.email}: {e}")
                     logger.info(
-                        f"Email extraction: {found}/{len(pairs)} leads got an email"
+                        f"Email extraction: {found}/{len(pairs)} extracted, "
+                        f"{verified} safe-to-send"
                     )
 
                 # 6. Persist to Supabase.

@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.core.models import Stage
+from backend.services import email_verifier
 from backend.services.supabase_client import get_client
 
 router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
@@ -26,6 +27,7 @@ class StagePatch(BaseModel):
 _OPP_FIELDS = (
     "id, type, source, lead_subtype, title, description, url, "
     "posted_date, company_name, location, contact_email, contact_phone, "
+    "email_verification_status, email_verified_at, "
     "score, priority, stage, estimated_value_usd, "
     "matched_skills, budget_signal, urgency_signal, pain_tags, notes, "
     "source_file"
@@ -56,6 +58,8 @@ def _row_to_opportunity(row: dict) -> dict:
         "urgency_signal": row.get("urgency_signal") or "",
         "pain_tags": row.get("pain_tags") or [],
         "notes": row.get("notes") or "",
+        "email_verification_status": row.get("email_verification_status") or "",
+        "email_verified_at": row.get("email_verified_at"),
         # Legacy alias kept for the frontend hook signature; backed by id.
         "source_file": row.get("source_file") or "",
         "raw_lead_id": row["id"],
@@ -131,6 +135,56 @@ async def get_opportunity(opp_id: str):
     if not rows:
         raise HTTPException(status_code=404, detail="Opportunity not found")
     return _row_to_opportunity(rows[0])
+
+
+@router.post("/{opp_id}/verify-email")
+async def verify_one(opp_id: str):
+    """Run the SMTP-handshake verifier on this lead's email and persist
+    the result. Returns the new status."""
+    client = get_client()
+    resp = (
+        client.table("opportunities")
+        .select("id, contact_email")
+        .eq("id", opp_id)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+    email = rows[0].get("contact_email") or ""
+    if not email:
+        raise HTTPException(status_code=400, detail="Lead has no email to verify")
+
+    result = email_verifier.verify_and_store(opp_id, email)
+    return {
+        "id": opp_id,
+        "email": email,
+        "status": result.status,
+        "reason": result.reason,
+        "safe_to_send": email_verifier.is_safe_to_send(result.status),
+    }
+
+
+class BatchVerifyRequest(BaseModel):
+    opportunity_ids: list[str]
+
+
+@router.post("/verify-batch")
+async def verify_batch(req: BatchVerifyRequest):
+    """Bulk-verify a list of opportunities. Cached results (verified within
+    the last 30 days) are skipped — counts toward 'cached' in the response."""
+    if not req.opportunity_ids:
+        raise HTTPException(status_code=400, detail="opportunity_ids required")
+    results = email_verifier.verify_many(req.opportunity_ids)
+    by_status: dict[str, int] = {}
+    for r in results.values():
+        by_status[r.status] = by_status.get(r.status, 0) + 1
+    return {
+        "checked": len(results),
+        "by_status": by_status,
+        "results": {k: {"status": v.status, "reason": v.reason} for k, v in results.items()},
+    }
 
 
 @router.patch("/{opp_id}/stage")

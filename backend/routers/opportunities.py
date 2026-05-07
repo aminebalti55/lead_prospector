@@ -137,6 +137,55 @@ async def get_opportunity(opp_id: str):
     return _row_to_opportunity(rows[0])
 
 
+@router.patch("/{opp_id}")
+async def update_opportunity(opp_id: str, body: dict):
+    """Partial update — currently allows notes, owner, follow_up_date,
+    contact info. Stage updates go through the dedicated /stage endpoint
+    so they can also write `last_contacted`."""
+    allowed = {
+        "notes", "owner", "follow_up_date",
+        "contact_name", "contact_email", "contact_phone",
+        "company_website", "company_size",
+    }
+    payload = {k: v for k, v in body.items() if k in allowed}
+    if not payload:
+        return {"ok": True}
+    resp = (
+        get_client()
+        .table("opportunities")
+        .update(payload)
+        .eq("id", opp_id)
+        .execute()
+    )
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+    return {"ok": True, "id": opp_id, **payload}
+
+
+class BulkStagePatch(BaseModel):
+    opportunity_ids: list[str]
+    stage: Stage
+
+
+@router.post("/bulk-stage")
+async def bulk_update_stage(req: BulkStagePatch):
+    """Apply the same stage to many opportunities. Used by the inbox bulk
+    'Mark Applied' / 'Mark Rejected' actions for direct leads."""
+    if not req.opportunity_ids:
+        raise HTTPException(status_code=400, detail="opportunity_ids required")
+    payload = {"stage": req.stage.value}
+    if req.stage.value == "contacted":
+        payload["last_contacted"] = _dt.utcnow().isoformat()
+    resp = (
+        get_client()
+        .table("opportunities")
+        .update(payload)
+        .in_("id", req.opportunity_ids)
+        .execute()
+    )
+    return {"updated": len(resp.data or []), "stage": req.stage.value}
+
+
 @router.post("/{opp_id}/verify-email")
 async def verify_one(opp_id: str):
     """Run the SMTP-handshake verifier on this lead's email and persist

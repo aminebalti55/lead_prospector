@@ -32,6 +32,61 @@ export function useOpportunity(id: string | null) {
   });
 }
 
+/** Partial update: notes, owner, follow_up_date, contact info. */
+export function useUpdateOpportunity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<Opportunity> }) =>
+      apiFetch(`/opportunities/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }),
+    onSettled: (_data, _err, { id }) => {
+      qc.invalidateQueries({ queryKey: ["opportunities"] });
+      qc.invalidateQueries({ queryKey: ["opportunity", id] });
+    },
+  });
+}
+
+/** Bulk stage update for direct-lead Apply/Reject. */
+export function useBulkUpdateStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids, stage }: { ids: string[]; stage: Stage }) =>
+      apiFetch<{ updated: number; stage: string }>(`/opportunities/bulk-stage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opportunity_ids: ids, stage }),
+      }),
+    // Same optimistic pattern as single update — snapshot every active list,
+    // mutate matching ids in place, roll back on error.
+    onMutate: async ({ ids, stage }) => {
+      await qc.cancelQueries({ queryKey: ["opportunities"] });
+      const idSet = new Set(ids);
+      const snapshots = qc.getQueriesData<OpportunityListResponse>({ queryKey: ["opportunities"] });
+      snapshots.forEach(([key, data]) => {
+        if (!data) return;
+        const next: OpportunityListResponse = {
+          ...data,
+          opportunities: data.opportunities.map((o) =>
+            idSet.has(o.id) ? { ...o, stage } : o,
+          ),
+        };
+        qc.setQueryData(key, next);
+      });
+      return { snapshots };
+    },
+    onError: (_err, _vars, context) => {
+      context?.snapshots.forEach(([key, data]) => qc.setQueryData(key, data));
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["opportunities"] });
+      qc.invalidateQueries({ queryKey: ["hub"] });
+    },
+  });
+}
+
 export function useUpdateStage() {
   const qc = useQueryClient();
   return useMutation({

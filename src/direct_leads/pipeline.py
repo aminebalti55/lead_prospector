@@ -105,6 +105,17 @@ class DirectLeadsPipeline:
         for lead in unique:
             self._score_lead(lead)
 
+        # Quality gate — drop leads that don't plausibly match the user's
+        # skill profile. Without this, weak per-source filters (Tanit's
+        # q-param, Indeed's loose keyword matching) flood the inbox with
+        # cleaning, sales, and admin jobs.
+        min_score = int(getattr(settings.direct_leads, "min_relevance_score", 15) or 15)
+        before = len(unique)
+        unique = [l for l in unique if l.relevance_score >= min_score]
+        dropped = before - len(unique)
+        if dropped:
+            logger.info(f"Dropped {dropped} low-relevance leads (score < {min_score})")
+
         if progress_callback:
             progress_callback("Enriching leads...")
         unique = self.enricher.enrich_many(unique)

@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
-import { Send, X } from "lucide-react";
+import { Send, X, CheckCircle2, Ban } from "lucide-react";
 import { Opportunity } from "../../types/opportunity";
 import { OpportunityListItem } from "./OpportunityListItem";
 import { SendTemplateModal } from "./SendTemplateModal";
 import { Button } from "../../design/primitives";
+import { useBulkUpdateStage } from "../../api/opportunities";
 
 interface Props {
   items: Opportunity[];
@@ -18,6 +19,7 @@ interface Props {
 export function OpportunityList({ items, selectedId, onSelect, loading, embedded }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [showBulkSend, setShowBulkSend] = useState(false);
+  const bulkStage = useBulkUpdateStage();
 
   function toggle(id: string) {
     setChecked((prev) => {
@@ -43,10 +45,26 @@ export function OpportunityList({ items, selectedId, onSelect, loading, embedded
   // Bulk send only makes sense for cold prospects — direct (job) leads
   // expect an individual reply on-platform, not a templated email blast.
   const selectedCold = selectedItems.filter((o) => o.type === "cold");
-  const selectedDirectCount = selectedItems.length - selectedCold.length;
+  const selectedDirect = selectedItems.filter((o) => o.type === "direct");
   const coldWithEmail = selectedCold.filter(
     (o) => o.contact_email && o.contact_email.includes("@"),
   ).length;
+
+  function bulkApply() {
+    if (selectedDirect.length === 0) return;
+    bulkStage.mutate(
+      { ids: selectedDirect.map((o) => o.id), stage: "contacted" },
+      { onSuccess: () => setChecked(new Set()) },
+    );
+  }
+
+  function bulkReject() {
+    if (selectedItems.length === 0) return;
+    bulkStage.mutate(
+      { ids: selectedItems.map((o) => o.id), stage: "lost" },
+      { onSuccess: () => setChecked(new Set()) },
+    );
+  }
 
   const containerClass = embedded
     ? "flex-1 bg-[var(--color-bg)] flex flex-col min-h-0"
@@ -69,43 +87,66 @@ export function OpportunityList({ items, selectedId, onSelect, loading, embedded
         )}
       </div>
 
-      {/* Bulk action bar — cold prospects only */}
+      {/* Bulk action bar — actions vary by selected lead type */}
       {checked.size > 0 && (
-        <div className="px-3 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)] flex items-center gap-2">
-          <span className="text-[12px] text-[var(--color-text-primary)] flex-1 leading-tight">
-            {selectedCold.length > 0 ? (
+        <div className="px-3 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)] flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-[var(--color-text-primary)] flex-1 leading-tight">
+              <span className="font-medium">{checked.size} selected</span>
+              {selectedDirect.length > 0 && (
+                <span className="text-[var(--color-text-tertiary)]"> · {selectedDirect.length} jobs</span>
+              )}
+              {selectedCold.length > 0 && (
+                <span className="text-[var(--color-text-tertiary)]"> · {selectedCold.length} cold ({coldWithEmail} with email)</span>
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+              aria-label="Clear selection"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* Direct-lead actions */}
+            {selectedDirect.length > 0 && (
               <>
-                {selectedCold.length} cold selected
-                <span className="text-[var(--color-text-tertiary)]"> · {coldWithEmail} with email</span>
+                <Button
+                  variant="primary"
+                  onClick={bulkApply}
+                  disabled={bulkStage.isPending}
+                >
+                  <CheckCircle2 className="w-3 h-3 mr-1" />
+                  Mark {selectedDirect.length} Applied
+                </Button>
               </>
-            ) : (
-              <span className="text-[var(--color-text-tertiary)]">
-                Bulk send only applies to cold prospects.
-              </span>
             )}
-            {selectedDirectCount > 0 && (
-              <span className="block text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
-                {selectedDirectCount} direct (job) lead{selectedDirectCount === 1 ? "" : "s"} ignored —
-                reply individually from the detail panel.
-              </span>
+
+            {/* Cold-lead action */}
+            {selectedCold.length > 0 && (
+              <Button
+                variant={selectedDirect.length === 0 ? "primary" : "secondary"}
+                onClick={() => setShowBulkSend(true)}
+                disabled={coldWithEmail === 0}
+              >
+                <Send className="w-3 h-3 mr-1" />
+                Email {coldWithEmail}
+              </Button>
             )}
-          </span>
-          <Button
-            variant="primary"
-            onClick={() => setShowBulkSend(true)}
-            disabled={coldWithEmail === 0}
-          >
-            <Send className="w-3 h-3 mr-1" />
-            Send to {coldWithEmail}
-          </Button>
-          <button
-            type="button"
-            onClick={clearSelection}
-            className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-            aria-label="Clear selection"
-          >
-            <X className="w-4 h-4" />
-          </button>
+
+            {/* Universal — works on both direct + cold */}
+            <Button
+              variant="ghost"
+              onClick={bulkReject}
+              disabled={bulkStage.isPending}
+            >
+              <Ban className="w-3 h-3 mr-1" />
+              Reject {checked.size}
+            </Button>
+          </div>
         </div>
       )}
 

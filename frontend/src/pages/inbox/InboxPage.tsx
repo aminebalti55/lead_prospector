@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useHotkeys } from "react-hotkeys-hook";
+import { Keyboard } from "lucide-react";
 import { useOpportunities } from "../../api/opportunities";
 import type { OpportunityFilters, Priority, OpportunityType } from "../../types/opportunity";
+import { useInboxHotkeys } from "../../hooks/useInboxHotkeys";
 import { CategoryTabs } from "./CategoryTabs";
 import { FilterPanel } from "./FilterPanel";
 import { OpportunityList } from "./OpportunityList";
@@ -59,6 +62,12 @@ export function InboxPage() {
     if (!selectedId && items.length > 0) setSelectedId(items[0].id);
   }, [items, selectedId]);
 
+  // Hotkeys: J/K nav, A apply, R reject, V viewing, O / Enter open, ? help.
+  useInboxHotkeys({ items, selectedId, setSelectedId });
+  const [showHelp, setShowHelp] = useState(false);
+  useHotkeys("shift+slash", () => setShowHelp((v) => !v), { preventDefault: true }, []);
+  useHotkeys("escape", () => setShowHelp(false), { enabled: showHelp }, []);
+
   // Counts for the left FilterPanel — based on the broadest possible set
   // (no type filter applied) so the user can always see the full pivot.
   const allItems = data?.opportunities ?? [];
@@ -76,7 +85,18 @@ export function InboxPage() {
   }, [allItems]);
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full relative">
+      {/* Floating shortcut-help button — opens via ? or click. */}
+      <button
+        type="button"
+        onClick={() => setShowHelp(true)}
+        className="absolute bottom-4 left-[210px] z-10 h-7 w-7 rounded-full bg-[var(--color-surface-raised)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)] transition-colors"
+        aria-label="Keyboard shortcuts"
+        title="Keyboard shortcuts (?)"
+      >
+        <Keyboard className="w-3.5 h-3.5" />
+      </button>
+      {showHelp && <ShortcutHelp onClose={() => setShowHelp(false)} />}
       <FilterPanel
         value={filters}
         onChange={setFilters}
@@ -105,6 +125,49 @@ export function InboxPage() {
             {isLoading ? "Loading…" : "Select an opportunity to see details."}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Keyboard-shortcut cheat sheet, toggled by `?`. */
+function ShortcutHelp({ onClose }: { onClose: () => void }) {
+  const rows: Array<[string, string]> = [
+    ["J / ↓", "Next lead"],
+    ["K / ↑", "Previous lead"],
+    ["A", "Mark as Applied (direct) / Contacted (cold)"],
+    ["R", "Reject this lead"],
+    ["V", "Mark as Viewing"],
+    ["O / Enter", "Open original (auto-flips to Viewing)"],
+    ["⌘ K", "Open command palette"],
+    ["?", "Toggle this overlay"],
+  ];
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={onClose}
+    >
+      <div
+        className="w-[420px] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-[var(--radius-md)] p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-[14px] font-semibold text-[var(--color-text-primary)] mb-3">
+          Keyboard shortcuts
+        </div>
+        <table className="w-full text-[12px]">
+          <tbody>
+            {rows.map(([key, label]) => (
+              <tr key={key}>
+                <td className="py-1.5 pr-3">
+                  <kbd className="text-[11px] text-[var(--color-text-secondary)] border border-[var(--color-border)] rounded px-1.5 py-0.5 bg-[var(--color-surface-raised)] font-mono">
+                    {key}
+                  </kbd>
+                </td>
+                <td className="py-1.5 text-[var(--color-text-primary)]">{label}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

@@ -25,6 +25,60 @@ logger = logging.getLogger(__name__)
 SEARCH_URL = "https://www.tanitjobs.com/jobs/?q={q}&l={l}&page={page}"
 LISTINGS_PER_PAGE = 23
 
+# Software-related stems to keep, in addition to the user's literal keywords.
+# Tanit's site search is weak — it returns "femmes de ménage" and other
+# unrelated listings even when q=react. So we client-side filter every
+# parsed lead against these stems plus the user's exact search terms.
+# Lowercase, accent-folded comparisons.
+_SOFTWARE_STEMS = (
+    "developer", "developpeur", "développeur", "dev",
+    "engineer", "ingenieur", "ingénieur", "engineering",
+    "software", "logiciel", "informatique",
+    "frontend", "front-end", "front end",
+    "backend", "back-end", "back end",
+    "fullstack", "full-stack", "full stack",
+    "devops", "sysadmin", "site reliability", "sre",
+    "data scientist", "data engineer", "data analyst",
+    "machine learning", "ml", "ai", "artificial intelligence",
+    "react", "next", "nextjs", "next.js",
+    "vue", "angular", "svelte",
+    "node", "nodejs", "node.js",
+    "python", "django", "fastapi", "flask",
+    "java", "spring",
+    "kotlin", "scala", "rust", "golang",
+    ".net", "dotnet", "c#",
+    "php", "laravel", "symfony",
+    "ruby", "rails",
+    "typescript", "javascript", "js", "ts",
+    "html", "css", "sass",
+    "qa", "tester", "test automation", "testeur",
+    "mobile", "android", "ios", "swift", "flutter",
+    "cloud", "aws", "azure", "gcp", "kubernetes", "docker",
+    "wordpress", "shopify", "magento", "drupal",
+    "tech lead", "team lead", "architect", "architecte",
+    "cto", "ctostartup", "founding engineer",
+)
+
+
+def _normalize(text: str) -> str:
+    """Lowercase + strip French/Tunisian accents for keyword matching."""
+    import unicodedata
+    out = unicodedata.normalize("NFKD", text or "")
+    return "".join(c for c in out if not unicodedata.combining(c)).lower()
+
+
+def _is_software_role(title: str, description: str, user_keywords: list[str]) -> bool:
+    """True if the listing is plausibly software-related.
+
+    Match against (a) the user's literal search keywords, and (b) a fixed
+    set of software-engineering stems. We deliberately keep the stem list
+    broad so cross-domain dev work (game dev, data eng, mobile, devops…)
+    isn't accidentally excluded.
+    """
+    haystack = _normalize(f"{title} {description}")
+    stems = [_normalize(k) for k in user_keywords] + [_normalize(s) for s in _SOFTWARE_STEMS]
+    return any(s and s in haystack for s in stems)
+
 
 def _strip_session_params(url: str) -> str:
     """Remove ?backPage=...&searchID=... so dedup works across runs."""
@@ -147,9 +201,20 @@ class TanitScraper:
                     else (response.body or b"").decode("utf-8", errors="replace")
                 )
                 page_leads = parse_listing_html(str(html))
+                # Tanit's q-param filter is too loose — cleaning, sales, and
+                # admin jobs slip through. Drop anything that doesn't look
+                # software-related.
+                before = len(page_leads)
+                page_leads = [
+                    l for l in page_leads
+                    if _is_software_role(l.title, l.description, keywords)
+                ]
+                dropped = before - len(page_leads)
+                if dropped:
+                    logger.info(f"[tanit] dropped {dropped} non-software listings on page {page}")
                 all_leads.extend(page_leads)
                 # If a page returned zero results, we've hit the end — stop early.
-                if len(page_leads) == 0:
+                if before == 0:
                     break
             except Exception as e:
                 logger.warning(f"[tanit] page {page} fetch failed: {e}")

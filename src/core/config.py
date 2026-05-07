@@ -274,6 +274,12 @@ class DirectLeadSettings(BaseSettings):
     # Agencies (GoodFirms/Clutch) are not date-sensitive and bypass this.
     max_age_days: int = Field(default=30)
 
+    # Drop direct-lead jobs whose RelevanceMatcher score is below this.
+    # Tanit's site search is loose enough that cleaning / admin jobs slip
+    # through with score ≈ 0. 15 is the floor where at least one skill or
+    # service keyword has matched. Lower it to be more permissive.
+    min_relevance_score: int = Field(default=15)
+
     class Config:
         extra = "ignore"
 

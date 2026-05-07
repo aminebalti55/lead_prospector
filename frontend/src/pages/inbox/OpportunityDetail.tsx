@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ExternalLink, Mail, Phone, MapPin, Calendar,
   CheckCircle2, MessageSquare, CalendarCheck, Trophy, X as XIcon,
+  StickyNote, Save,
 } from "lucide-react";
 import { Opportunity, Stage } from "../../types/opportunity";
 import { Button, Pill, MoneyValue, StatusDot, Card } from "../../design/primitives";
-import { useUpdateStage } from "../../api/opportunities";
+import { useUpdateOpportunity, useUpdateStage } from "../../api/opportunities";
 import { SendTemplateModal } from "./SendTemplateModal";
 
 const STAGES: Stage[] = ["new", "researching", "contacted", "replied", "meeting", "won", "lost"];
@@ -43,7 +44,22 @@ interface Props {
 
 export function OpportunityDetail({ opp }: Props) {
   const updateStage = useUpdateStage();
+  const updateOpp = useUpdateOpportunity();
   const [showSend, setShowSend] = useState(false);
+  const [notesDraft, setNotesDraft] = useState(opp.notes || "");
+  const [notesDirty, setNotesDirty] = useState(false);
+
+  // Reset draft when the user switches to a different lead.
+  useEffect(() => {
+    setNotesDraft(opp.notes || "");
+    setNotesDirty(false);
+  }, [opp.id]);
+
+  function saveNotes() {
+    if (!notesDirty) return;
+    updateOpp.mutate({ id: opp.id, patch: { notes: notesDraft } });
+    setNotesDirty(false);
+  }
 
   const isDirect = opp.type === "direct";
   const alreadyApplied = opp.stage === "contacted" || ["replied", "meeting", "won", "lost"].includes(opp.stage);
@@ -141,6 +157,48 @@ export function OpportunityDetail({ opp }: Props) {
           </p>
         </Card>
       )}
+
+      {/* Notes — always visible, save on blur or Cmd/Ctrl+Enter */}
+      <Card className="p-4 flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium flex items-center gap-1.5">
+            <StickyNote className="w-3 h-3" /> Notes
+          </div>
+          {notesDirty && (
+            <button
+              type="button"
+              onClick={saveNotes}
+              disabled={updateOpp.isPending}
+              className="flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:underline disabled:opacity-50"
+            >
+              <Save className="w-3 h-3" /> Save
+            </button>
+          )}
+          {!notesDirty && updateOpp.isSuccess && (
+            <span className="text-[11px] text-[var(--color-text-tertiary)]">Saved</span>
+          )}
+        </div>
+        <textarea
+          value={notesDraft}
+          onChange={(e) => {
+            setNotesDraft(e.target.value);
+            setNotesDirty(e.target.value !== (opp.notes || ""));
+          }}
+          onBlur={saveNotes}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              saveNotes();
+            }
+          }}
+          placeholder="Asked $90/hr, declined. Recruiter wants follow-up next Mon."
+          rows={3}
+          className="w-full px-2.5 py-2 bg-[var(--color-surface-raised)] border border-[var(--color-border)] rounded-[var(--radius-sm)] text-[13px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:outline-none focus:border-[var(--color-accent)] resize-y"
+        />
+        <span className="text-[10px] text-[var(--color-text-tertiary)]">
+          Auto-saves on blur · ⌘+Enter saves immediately
+        </span>
+      </Card>
 
       {/* Signals */}
       {(opp.matched_skills.length > 0 || opp.budget_signal || opp.urgency_signal || opp.pain_tags.length > 0) && (

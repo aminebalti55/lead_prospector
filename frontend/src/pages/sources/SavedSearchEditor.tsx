@@ -4,7 +4,18 @@ import clsx from "clsx";
 import { Button, Card } from "../../design/primitives";
 import { useCreateSavedSearch, useUpdateSavedSearch } from "../../api/direct";
 import { useNiches } from "../../api/cold";
+import { LocationChips } from "../../components/inputs/LocationChips";
+import { KeywordChips } from "../../components/inputs/KeywordChips";
 import type { SavedSearch } from "../../types/source";
+
+/** Niche bundles — quick-add toggles. Keys reference niches in
+ * src.core.config; the bundle expands to the matching key set. */
+const NICHE_BUNDLES: Array<{ name: string; keys: string[] }> = [
+  { name: "All home services", keys: ["plumbing", "hvac", "roofing", "pest_control"] },
+  { name: "All healthcare",    keys: ["dental", "cosmetic_dentist", "med_spa"] },
+  { name: "Legal",              keys: ["personal_injury_lawyer"] },
+  { name: "All other",          keys: ["real_estate", "auto_repair"] },
+];
 
 const FREQUENCIES = ["hourly", "daily", "weekly", "biweekly", "monthly"];
 
@@ -30,8 +41,9 @@ type Mode = "direct" | "cold";
 export function SavedSearchEditor({ initial, onClose }: Props) {
   const [mode, setMode] = useState<Mode>(initial?.type ?? "direct");
   const [name, setName] = useState(initial?.name ?? "");
-  const [keywordsRaw, setKeywordsRaw] = useState((initial?.keywords ?? []).join(", "));
-  const [locationsRaw, setLocationsRaw] = useState((initial?.locations ?? []).join(", "));
+  // Chip-state: stays in arrays now, no comma-separated marshaling needed.
+  const [keywords, setKeywords] = useState<string[]>(initial?.keywords ?? []);
+  const [locations, setLocations] = useState<string[]>(initial?.locations ?? []);
   const [selectedNiches, setSelectedNiches] = useState<string[]>(initial?.niches ?? []);
   const [sources, setSources] = useState<string[]>(
     initial?.sources && initial.sources.length > 0
@@ -80,15 +92,12 @@ export function SavedSearchEditor({ initial, onClose }: Props) {
   const isPending = create.isPending || update.isPending;
 
   const isDirectValid =
-    mode === "direct" &&
-    !!name.trim() &&
-    keywordsRaw.split(",").map((k) => k.trim()).filter(Boolean).length > 0 &&
-    sources.length > 0;
+    mode === "direct" && !!name.trim() && keywords.length > 0 && sources.length > 0;
 
   const isColdValid =
     mode === "cold" &&
     !!name.trim() &&
-    locationsRaw.split(",").map((l) => l.trim()).filter(Boolean).length > 0 &&
+    locations.length > 0 &&
     selectedNiches.length > 0 &&
     sources.length > 0;
 
@@ -97,9 +106,6 @@ export function SavedSearchEditor({ initial, onClose }: Props) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-
-    const keywords = keywordsRaw.split(",").map((k) => k.trim()).filter(Boolean);
-    const locations = locationsRaw.split(",").map((l) => l.trim()).filter(Boolean);
 
     const body = {
       name: name.trim(),
@@ -178,40 +184,63 @@ export function SavedSearchEditor({ initial, onClose }: Props) {
             />
           </Field>
 
-          {/* Direct mode — Keywords */}
+          {/* Direct mode — Keywords as chips */}
           {mode === "direct" && (
             <Field
-              label="Keywords (comma-separated)"
-              hint="What roles to search for. Each keyword is run separately, results merge."
+              label={`Keywords (${keywords.length})`}
+              hint="Type a role then Enter. Suggestions appear below — pick or use your own."
             >
-              <input
-                value={keywordsRaw}
-                onChange={(e) => setKeywordsRaw(e.target.value)}
-                placeholder="react developer, next.js, fullstack"
-                className="h-8 px-2.5 bg-[var(--color-surface-raised)] border border-[var(--color-border)] rounded-[var(--radius-sm)] text-[13px] text-[var(--color-text-primary)] w-full"
-              />
+              <KeywordChips values={keywords} onChange={setKeywords} />
             </Field>
           )}
 
-          {/* Cold mode — Locations + Niches */}
+          {/* Cold mode — Locations (autocomplete) + Niches (preset-bundled) */}
           {mode === "cold" && (
             <>
               <Field
-                label="Locations (comma-separated)"
-                hint="Cities you can serve. Each location runs as a separate scrape."
+                label={`Locations (${locations.length})`}
+                hint="Type a city — suggestions are real OSM places (no typos). Each location runs as a separate scrape."
               >
-                <input
-                  value={locationsRaw}
-                  onChange={(e) => setLocationsRaw(e.target.value)}
-                  placeholder="Austin, TX · Houston, TX · Dallas, TX"
-                  className="h-8 px-2.5 bg-[var(--color-surface-raised)] border border-[var(--color-border)] rounded-[var(--radius-sm)] text-[13px] text-[var(--color-text-primary)] w-full"
-                />
+                <LocationChips values={locations} onChange={setLocations} />
               </Field>
 
               <Field
                 label={`Niches (${selectedNiches.length} selected)`}
-                hint="Pick what kinds of businesses to find. We use a curated list with proven outreach pain-points."
+                hint="Pick what kinds of businesses to find. Use a bundle for fast multi-select."
               >
+                {/* Niche bundles — quick toggles */}
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {NICHE_BUNDLES.map((bundle) => {
+                    const allSelected = bundle.keys.every((k) => selectedNiches.includes(k));
+                    return (
+                      <button
+                        key={bundle.name}
+                        type="button"
+                        onClick={() => {
+                          if (allSelected) {
+                            // Toggle off — remove only this bundle's keys.
+                            setSelectedNiches((curr) =>
+                              curr.filter((k) => !bundle.keys.includes(k)),
+                            );
+                          } else {
+                            // Toggle on — union of current + bundle.
+                            setSelectedNiches((curr) =>
+                              Array.from(new Set([...curr, ...bundle.keys])),
+                            );
+                          }
+                        }}
+                        className={clsx(
+                          "h-6 px-2 text-[10px] uppercase tracking-wider rounded-[var(--radius-xs)] border transition-colors",
+                          allSelected
+                            ? "bg-[var(--color-accent)]/20 text-[var(--color-accent)] border-[var(--color-accent)]"
+                            : "text-[var(--color-text-tertiary)] border-[var(--color-border)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-primary)]",
+                        )}
+                      >
+                        {bundle.name}
+                      </button>
+                    );
+                  })}
+                </div>
                 {niches.isLoading ? (
                   <div className="text-[12px] text-[var(--color-text-tertiary)]">Loading niches…</div>
                 ) : Object.keys(nichesByCategory).length === 0 ? (

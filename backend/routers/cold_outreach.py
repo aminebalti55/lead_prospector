@@ -26,6 +26,40 @@ _DEFAULT_NICHES = ["plumbing"]
 _DEFAULT_SCRAPERS = ["google_maps", "yelp", "yellowpages", "bbb", "manta"]
 
 
+# Display labels for the predefined niche dictionary in src.core.config.
+# These power the cold-scan niche picker in the UI.
+_NICHE_DISPLAY = {
+    "plumbing": {"label": "Plumbing", "tier": 1, "category": "Home services"},
+    "hvac": {"label": "HVAC", "tier": 1, "category": "Home services"},
+    "roofing": {"label": "Roofing", "tier": 1, "category": "Home services"},
+    "pest_control": {"label": "Pest control", "tier": 1, "category": "Home services"},
+    "dental": {"label": "Dental clinic", "tier": 1, "category": "Healthcare"},
+    "cosmetic_dentist": {"label": "Cosmetic dentist", "tier": 1, "category": "Healthcare"},
+    "med_spa": {"label": "Med spa", "tier": 1, "category": "Healthcare"},
+    "personal_injury_lawyer": {"label": "Personal injury lawyer", "tier": 1, "category": "Legal"},
+    "real_estate": {"label": "Real estate", "tier": 2, "category": "Other"},
+    "auto_repair": {"label": "Auto repair", "tier": 2, "category": "Other"},
+}
+
+
+@router.get("/niches")
+async def list_niches() -> dict:
+    """Predefined niches for cold outreach. UI uses these in the niche picker."""
+    from src.core.config import settings
+    out = []
+    for key, keywords in (settings.search.niches or {}).items():
+        meta = _NICHE_DISPLAY.get(key, {"label": key.title(), "tier": 3, "category": "Other"})
+        out.append({
+            "key": key,
+            "label": meta["label"],
+            "tier": meta["tier"],
+            "category": meta["category"],
+            "keywords": list(keywords or []),
+        })
+    out.sort(key=lambda n: (n["tier"], n["category"], n["label"]))
+    return {"niches": out}
+
+
 # ── Scan endpoints ────────────────────────────────────────────────────
 
 

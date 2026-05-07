@@ -17,11 +17,26 @@ export interface SourcesResponse {
 export interface SavedSearch {
   id: string;
   name: string;
+  /** "direct" = job-board scrape (keywords-driven).
+   *  "cold"   = SMB-prospect scrape (location + niche-driven). */
+  type: "direct" | "cold";
   keywords: string[];
   sources: string[];
+  /** Cold-only: list of "City, ST" entries. */
+  locations: string[];
+  /** Cold-only: niche keys from /api/cold/niches. */
+  niches: string[];
   source_configs?: Record<string, unknown>;
   frequency: string;
   max_results: number;
-  enabled: boolean;
-  last_run: string | null;
+  is_paused: boolean;
+  last_run_at: string | null;
+}
+
+export interface NicheOption {
+  key: string;
+  label: string;
+  tier: number;
+  category: string;
+  keywords: string[];
 }

@@ -201,7 +201,12 @@ async def list_saved_searches():
 
 @router.post("/saved-searches")
 async def create_saved_search(body: dict):
-    return saved_searches_store.create({**body, "type": "direct"})
+    # Default to direct so legacy callers without a `type` field keep working,
+    # but allow the body to override (the frontend modal now sends `cold` for
+    # cold-outreach saved searches).
+    if "type" not in body:
+        body = {**body, "type": "direct"}
+    return saved_searches_store.create(body)
 
 
 @router.put("/saved-searches/{search_id}")
@@ -221,17 +226,53 @@ async def delete_saved_search(search_id: str):
 
 @router.post("/saved-searches/{search_id}/run")
 async def run_saved_search_now(search_id: str):
+    """Run-now dispatches to the cold or direct pipeline depending on the
+    saved search's `type`. Cold needs locations + niches; direct needs
+    keywords. Validation differs accordingly."""
     search = saved_searches_store.get_by_id(search_id)
     if not search:
         raise HTTPException(status_code=404, detail="Saved search not found")
 
-    keywords = search.get("keywords") or []
-    if not keywords:
-        raise HTTPException(status_code=400, detail="Saved search has no keywords")
-
-    sources = search.get("sources") or _DEFAULT_SOURCES
+    kind = search.get("type") or "direct"
     max_results = int(search.get("max_results") or 50)
 
+    if kind == "cold":
+        locations = search.get("locations") or []
+        niches = search.get("niches") or []
+        if not locations:
+            raise HTTPException(status_code=400, detail="Cold search has no locations")
+        if not niches:
+            raise HTTPException(status_code=400, detail="Cold search has no niches")
+
+        scan = scans_store.create({
+            "type": "cold",
+            "status": "queued",
+            "sources": search.get("sources") or [
+                "google_maps", "yelp", "yellowpages", "bbb", "manta",
+            ],
+            "locations": locations,
+            "niches": niches,
+            "max_results": max_results,
+        })
+        saved_searches_store.mark_run_started(search_id)
+        from backend.routers.cold_outreach import _execute_scan as _exec_cold
+        asyncio.create_task(_exec_cold(scan["id"], {
+            "locations": locations,
+            "niches": niches,
+            "skip_scrapers": [],
+            "skip_audit": False,
+            "fetch_emails": True,
+            "fetch_details": True,
+            "max_results": max_results,
+        }))
+        return {"scan_id": scan["id"], "status": "queued", "type": "cold"}
+
+    # Direct path
+    keywords = search.get("keywords") or []
+    if not keywords:
+        raise HTTPException(status_code=400, detail="Direct search has no keywords")
+
+    sources = search.get("sources") or _DEFAULT_SOURCES
     scan = scans_store.create({
         "type": "direct",
         "status": "queued",
@@ -240,10 +281,9 @@ async def run_saved_search_now(search_id: str):
         "max_results": max_results,
     })
     saved_searches_store.mark_run_started(search_id)
-
     asyncio.create_task(_execute_scan(scan["id"], {
         "sources": sources,
         "keywords": keywords,
         "max_results": max_results,
     }))
-    return {"scan_id": scan["id"], "status": "queued"}
+    return {"scan_id": scan["id"], "status": "queued", "type": "direct"}

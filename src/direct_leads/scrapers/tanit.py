@@ -25,38 +25,68 @@ logger = logging.getLogger(__name__)
 SEARCH_URL = "https://www.tanitjobs.com/jobs/?q={q}&l={l}&page={page}"
 LISTINGS_PER_PAGE = 23
 
-# Software-related stems to keep, in addition to the user's literal keywords.
-# Tanit's site search is weak — it returns "femmes de ménage" and other
-# unrelated listings even when q=react. So we client-side filter every
-# parsed lead against these stems plus the user's exact search terms.
-# Lowercase, accent-folded comparisons.
+# Software-related stems. Word-boundary matched (see `_is_software_role`)
+# so two-letter stems like 'ai' don't leak in via 'Anglais', 'Français', etc.
+# Multi-word phrases ("data scientist") match as substrings.
 _SOFTWARE_STEMS = (
+    # Roles
     "developer", "developpeur", "développeur", "dev",
     "engineer", "ingenieur", "ingénieur", "engineering",
     "software", "logiciel", "informatique",
-    "frontend", "front-end", "front end",
-    "backend", "back-end", "back end",
-    "fullstack", "full-stack", "full stack",
-    "devops", "sysadmin", "site reliability", "sre",
+    "frontend", "front-end",
+    "backend", "back-end",
+    "fullstack", "full-stack",
+    "full stack", "front end", "back end",
+    "devops", "sysadmin", "sre",
     "data scientist", "data engineer", "data analyst",
-    "machine learning", "ml", "ai", "artificial intelligence",
-    "react", "next", "nextjs", "next.js",
-    "vue", "angular", "svelte",
+    "machine learning", "artificial intelligence",
+    # Languages / frameworks
+    "react", "nextjs", "next.js",
+    "vue", "vuejs", "angular", "svelte",
     "node", "nodejs", "node.js",
     "python", "django", "fastapi", "flask",
     "java", "spring",
     "kotlin", "scala", "rust", "golang",
-    ".net", "dotnet", "c#",
+    ".net", "dotnet", "c#", "csharp",
     "php", "laravel", "symfony",
     "ruby", "rails",
-    "typescript", "javascript", "js", "ts",
-    "html", "css", "sass",
-    "qa", "tester", "test automation", "testeur",
-    "mobile", "android", "ios", "swift", "flutter",
-    "cloud", "aws", "azure", "gcp", "kubernetes", "docker",
+    "typescript", "javascript",
+    # QA / testing
+    "tester", "testeur", "qa engineer", "test automation",
+    # Mobile
+    "android", "swift", "flutter", "react native",
+    # Cloud / infra
+    "kubernetes", "docker", "terraform",
+    # Platforms / CMS
     "wordpress", "shopify", "magento", "drupal",
+    # Seniority / titles
     "tech lead", "team lead", "architect", "architecte",
-    "cto", "ctostartup", "founding engineer",
+    "founding engineer",
+)
+
+# Two-letter stems are kept separate and matched with strict word-boundaries
+# so they don't leak via substrings ("ai" inside "Anglais", "ts" inside "Carts").
+_SOFTWARE_SHORT_TOKENS = ("ai", "ml", "qa", "js", "ts", "ios")
+
+# Anti-stems — phrases that strongly indicate a NON-software role even if a
+# software stem accidentally appears. Negative-match wins.
+_NON_SOFTWARE_TITLES = (
+    "femme de menage", "femmes de menage",
+    "commercial",            # sales role
+    "vendeur", "vendeuse",   # sales clerk
+    "comptable",             # accountant
+    "secretaire",            # secretary
+    "assistant administratif", "assistante administrative",
+    "telemarketing", "telemarketeur",
+    "operateur", "operatrice",
+    "agent commercial", "agent de vente",
+    "chargé de clientèle", "charge de clientele",
+    "manutention", "magasinier",
+    "chauffeur", "livreur",
+    "barista",
+    "serveur", "serveuse",
+    "cuisinier", "cuisiniere",
+    "femme de chambre",
 )
 
 
@@ -67,17 +97,63 @@ def _normalize(text: str) -> str:
     return "".join(c for c in out if not unicodedata.combining(c)).lower()
 
 
+def _word_boundary_match(haystack: str, needle: str) -> bool:
+    """True iff `needle` appears as a whole word (or contiguous phrase) in
+    `haystack`. Both should already be lowercase + accent-stripped."""
+    import re
+    if not needle:
+        return False
+    # Treat `.`, `-`, `+`, `#` as word characters so 'next.js' / 'c#' match.
+    pattern = r"(?:^|[^a-z0-9.+#-])" + re.escape(needle) + r"(?:$|[^a-z0-9.+#-])"
+    return re.search(pattern, haystack) is not None
+
+
 def _is_software_role(title: str, description: str, user_keywords: list[str]) -> bool:
     """True if the listing is plausibly software-related.
 
-    Match against (a) the user's literal search keywords, and (b) a fixed
-    set of software-engineering stems. We deliberately keep the stem list
-    broad so cross-domain dev work (game dev, data eng, mobile, devops…)
-    isn't accidentally excluded.
+    Three checks, in order:
+      1. Hard reject — title contains a known non-software role word
+         (Commercial, Femme de ménage, Comptable, …). Negative-match wins.
+      2. Positive match — the user's search keyword appears as a word, OR
+         any software stem (multi-letter, word-boundary matched), OR a
+         short stem (ai, ml, qa, js, ts, ios) at a word boundary.
     """
-    haystack = _normalize(f"{title} {description}")
-    stems = [_normalize(k) for k in user_keywords] + [_normalize(s) for s in _SOFTWARE_STEMS]
-    return any(s and s in haystack for s in stems)
+    norm_title = _normalize(title)
+    norm_desc = _normalize(description)
+    haystack = f"{norm_title} {norm_desc}"
+
+    # Hard-reject by title — many Tanit listings have generic titles where
+    # only the company is software-related, but the role itself is sales /
+    # admin / support. Trust the title verb.
+    for blacklisted in _NON_SOFTWARE_TITLES:
+        if blacklisted in norm_title:
+            return False
+
+    # Try user keywords first (most specific signal).
+    for kw in user_keywords:
+        kw_norm = _normalize(kw)
+        if not kw_norm:
+            continue
+        # Multi-word keyword → substring is fine. Single-word → word boundary.
+        if " " in kw_norm:
+            if kw_norm in haystack:
+                return True
+        elif _word_boundary_match(haystack, kw_norm):
+            return True
+
+    # Multi-letter software stems — substring OK because they're long enough
+    # that false-positives are unlikely.
+    for stem in _SOFTWARE_STEMS:
+        stem_norm = _normalize(stem)
+        if stem_norm and stem_norm in haystack:
+            return True
+
+    # Short tokens — strict word boundary required.
+    for token in _SOFTWARE_SHORT_TOKENS:
+        if _word_boundary_match(haystack, token):
+            return True
+
+    return False
 
 
 def _strip_session_params(url: str) -> str:

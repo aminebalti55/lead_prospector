@@ -1,11 +1,41 @@
 import { useState } from "react";
-import { ExternalLink, Mail, Phone, MapPin, Calendar } from "lucide-react";
+import {
+  ExternalLink, Mail, Phone, MapPin, Calendar,
+  CheckCircle2, MessageSquare, CalendarCheck, Trophy, X as XIcon,
+} from "lucide-react";
 import { Opportunity, Stage } from "../../types/opportunity";
 import { Button, Pill, MoneyValue, StatusDot, Card } from "../../design/primitives";
 import { useUpdateStage } from "../../api/opportunities";
 import { SendTemplateModal } from "./SendTemplateModal";
 
 const STAGES: Stage[] = ["new", "researching", "contacted", "replied", "meeting", "won", "lost"];
+
+/** Stage labels are context-sensitive. A `direct` (job) lead in 'contacted'
+ * means "I applied", while a `cold` (prospect) lead in 'contacted' means
+ * "I sent them an email". The pipeline is the same column; only the UI
+ * label changes so the user reads the right verb. */
+function stageLabel(stage: Stage, type: "direct" | "cold"): string {
+  if (type === "direct") {
+    return {
+      new: "New",
+      researching: "Viewing",
+      contacted: "Applied",
+      replied: "Heard back",
+      meeting: "Interview",
+      won: "Hired",
+      lost: "Rejected",
+    }[stage];
+  }
+  return {
+    new: "New",
+    researching: "Researching",
+    contacted: "Contacted",
+    replied: "Replied",
+    meeting: "Meeting",
+    won: "Won",
+    lost: "Passed",
+  }[stage];
+}
 
 interface Props {
   opp: Opportunity;
@@ -14,6 +44,24 @@ interface Props {
 export function OpportunityDetail({ opp }: Props) {
   const updateStage = useUpdateStage();
   const [showSend, setShowSend] = useState(false);
+
+  const isDirect = opp.type === "direct";
+  const alreadyApplied = opp.stage === "contacted" || ["replied", "meeting", "won", "lost"].includes(opp.stage);
+
+  /** Click "Open original" → mark this lead as 'researching' (= "I'm looking
+   * at it") so the inbox row visually flips state. We only auto-advance from
+   * 'new' so we never downgrade a stage the user already set manually. */
+  function openOriginal() {
+    if (!opp.url) return;
+    if (opp.stage === "new") {
+      updateStage.mutate({ id: opp.id, stage: "researching" });
+    }
+    window.open(opp.url, "_blank", "noopener,noreferrer");
+  }
+
+  function markApplied() {
+    updateStage.mutate({ id: opp.id, stage: "contacted" });
+  }
 
   return (
     <div className="flex-1 overflow-auto p-6 flex flex-col gap-4">
@@ -32,6 +80,8 @@ export function OpportunityDetail({ opp }: Props) {
 
         <div className="flex flex-wrap items-center gap-2 text-[12px] text-[var(--color-text-secondary)]">
           <Pill tone="neutral">{opp.source}</Pill>
+          {/* Prominent stage badge — visible at a glance */}
+          <StageBadge stage={opp.stage} type={opp.type} />
           {opp.company_name && <span>{opp.company_name}</span>}
           {opp.location && (
             <span className="flex items-center gap-1">
@@ -45,19 +95,18 @@ export function OpportunityDetail({ opp }: Props) {
             </span>
           )}
           {opp.url && (
-            <a
-              href={opp.url}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              type="button"
+              onClick={openOriginal}
               className="flex items-center gap-1 text-[var(--color-accent)] hover:underline"
             >
               Open original <ExternalLink className="w-3 h-3" />
-            </a>
+            </button>
           )}
         </div>
       </div>
 
-      {/* Stage selector */}
+      {/* Stage selector — re-labelled for direct vs cold */}
       <Card className="p-3">
         <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] font-medium mb-2">
           Stage
@@ -75,7 +124,7 @@ export function OpportunityDetail({ opp }: Props) {
                   : "px-2.5 h-7 text-[12px] rounded-[var(--radius-sm)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)]"
               }
             >
-              {s}
+              {stageLabel(s, opp.type)}
             </button>
           ))}
         </div>
@@ -160,27 +209,84 @@ export function OpportunityDetail({ opp }: Props) {
         </Card>
       )}
 
-      {/* Quick actions */}
+      {/* Quick actions — DIFFERENT for direct vs cold */}
       <div className="flex gap-2 pt-2">
-        {opp.url && (
-          <Button variant="primary" onClick={() => window.open(opp.url, "_blank")}>
-            Reply now
-          </Button>
+        {isDirect ? (
+          <>
+            {opp.url && (
+              <Button variant="primary" onClick={openOriginal}>
+                <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+                Open & Apply on LinkedIn
+              </Button>
+            )}
+            {alreadyApplied ? (
+              <Button variant="secondary" disabled>
+                <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                {stageLabel(opp.stage, "direct")}
+              </Button>
+            ) : (
+              <Button variant="secondary" onClick={markApplied}>
+                <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                Mark as Applied
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              onClick={() => updateStage.mutate({ id: opp.id, stage: "lost" })}
+            >
+              Not interested
+            </Button>
+          </>
+        ) : (
+          <>
+            {opp.url && (
+              <Button variant="primary" onClick={openOriginal}>
+                Open site
+              </Button>
+            )}
+            <Button variant="secondary" onClick={() => setShowSend(true)}>
+              Send template
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => updateStage.mutate({ id: opp.id, stage: "lost" })}
+            >
+              Dismiss
+            </Button>
+          </>
         )}
-        <Button variant="secondary" onClick={() => setShowSend(true)}>
-          Send template
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => updateStage.mutate({ id: opp.id, stage: "lost" })}
-        >
-          Dismiss
-        </Button>
       </div>
 
       {showSend && (
         <SendTemplateModal recipients={[opp]} onClose={() => setShowSend(false)} />
       )}
     </div>
+  );
+}
+
+/** Visible-at-a-glance stage chip in the header. Color-coded by phase:
+ *  green for progressing (applied/replied/meeting/won), red for lost,
+ *  neutral for new/researching. */
+function StageBadge({ stage, type }: { stage: Stage; type: "direct" | "cold" }) {
+  const label = stageLabel(stage, type);
+  if (stage === "new") return null;
+
+  const config: Record<Stage, { tone: "accent" | "warm" | "hot" | "neutral"; icon: React.ReactNode }> = {
+    new: { tone: "neutral", icon: null },
+    researching: { tone: "neutral", icon: null },
+    contacted: { tone: "accent", icon: <CheckCircle2 className="w-3 h-3" /> },
+    replied: { tone: "accent", icon: <MessageSquare className="w-3 h-3" /> },
+    meeting: { tone: "accent", icon: <CalendarCheck className="w-3 h-3" /> },
+    won: { tone: "accent", icon: <Trophy className="w-3 h-3" /> },
+    lost: { tone: "hot", icon: <XIcon className="w-3 h-3" /> },
+  };
+  const { tone, icon } = config[stage];
+  return (
+    <Pill tone={tone}>
+      <span className="flex items-center gap-1">
+        {icon}
+        {label}
+      </span>
+    </Pill>
   );
 }

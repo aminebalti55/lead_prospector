@@ -1,9 +1,11 @@
 import clsx from "clsx";
-import { Check, Mail, MailX, CheckCircle2 } from "lucide-react";
-import { Opportunity } from "../../types/opportunity";
+import {
+  Check, Mail, MailX,
+  CheckCircle2, MessageSquare, CalendarCheck, Trophy,
+  Eye, X as XIcon,
+} from "lucide-react";
+import { Opportunity, Stage } from "../../types/opportunity";
 import { StatusDot, Pill, MoneyValue } from "../../design/primitives";
-
-const POST_NEW_STAGES = new Set(["contacted", "replied", "meeting", "won", "lost"]);
 
 interface Props {
   opp: Opportunity;
@@ -11,6 +13,44 @@ interface Props {
   selected: boolean;
   onClick: () => void;
   onToggleSelect: (e: React.MouseEvent) => void;
+}
+
+/** Stage labels are different for direct (jobs) vs cold (prospects). For
+ * direct, "contacted" reads as "Applied" — that's the verb the user actually
+ * performed. */
+function rowStageLabel(stage: Stage, type: "direct" | "cold"): string {
+  if (type === "direct") {
+    return {
+      researching: "Viewing",
+      contacted: "Applied",
+      replied: "Heard back",
+      meeting: "Interview",
+      won: "Hired",
+      lost: "Rejected",
+      new: "",
+    }[stage];
+  }
+  return {
+    researching: "Researching",
+    contacted: "Contacted",
+    replied: "Replied",
+    meeting: "Meeting",
+    won: "Won",
+    lost: "Passed",
+    new: "",
+  }[stage];
+}
+
+function rowStageIcon(stage: Stage) {
+  switch (stage) {
+    case "researching": return <Eye className="w-2.5 h-2.5" />;
+    case "contacted": return <CheckCircle2 className="w-2.5 h-2.5" />;
+    case "replied": return <MessageSquare className="w-2.5 h-2.5" />;
+    case "meeting": return <CalendarCheck className="w-2.5 h-2.5" />;
+    case "won": return <Trophy className="w-2.5 h-2.5" />;
+    case "lost": return <XIcon className="w-2.5 h-2.5" />;
+    default: return null;
+  }
 }
 
 function formatAge(iso: string | null): string {
@@ -26,7 +66,14 @@ function formatAge(iso: string | null): string {
 
 export function OpportunityListItem({ opp, active, selected, onClick, onToggleSelect }: Props) {
   const hasEmail = !!(opp.contact_email && opp.contact_email.includes("@"));
-  const alreadyTouched = POST_NEW_STAGES.has(opp.stage);
+  // 'lost' is dimmed but with a visible red badge so the user knows they
+  // already passed. Active progressing stages are highlighted in volt-green.
+  const isLost = opp.stage === "lost";
+  const isProgressing = ["contacted", "replied", "meeting", "won"].includes(opp.stage);
+  const isResearching = opp.stage === "researching";
+
+  const stageLabel = rowStageLabel(opp.stage as Stage, opp.type);
+
   return (
     <div
       className={clsx(
@@ -35,6 +82,7 @@ export function OpportunityListItem({ opp, active, selected, onClick, onToggleSe
         active
           ? "bg-[var(--color-surface-raised)]"
           : "hover:bg-[var(--color-surface)]",
+        isLost && "opacity-50",
       )}
     >
       <button
@@ -54,14 +102,14 @@ export function OpportunityListItem({ opp, active, selected, onClick, onToggleSe
       <button
         type="button"
         onClick={onClick}
-        className={clsx(
-          "flex-1 text-left flex flex-col gap-1.5 min-w-0",
-          alreadyTouched && "opacity-60",
-        )}
+        className="flex-1 text-left flex flex-col gap-1.5 min-w-0"
       >
         <div className="flex items-center gap-2 min-w-0">
           <StatusDot status={opp.priority === "hot" ? "hot" : opp.priority === "warm" ? "warm" : "cold"} />
-          <span className="text-[13px] font-medium text-[var(--color-text-primary)] truncate flex-1">
+          <span className={clsx(
+            "text-[13px] font-medium truncate flex-1",
+            isLost ? "text-[var(--color-text-tertiary)] line-through" : "text-[var(--color-text-primary)]",
+          )}>
             {opp.title || "(no title)"}
           </span>
           <MoneyValue usd={opp.estimated_value_usd} size="sm" tone="accent" />
@@ -74,9 +122,16 @@ export function OpportunityListItem({ opp, active, selected, onClick, onToggleSe
           ) : (
             <MailX className="w-3 h-3 text-[var(--color-text-tertiary)] shrink-0" aria-label="No email" />
           )}
-          {alreadyTouched && (
-            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-[var(--radius-xs)] bg-[var(--color-accent)]/15 text-[var(--color-accent)] text-[10px] font-medium uppercase tracking-wider">
-              <CheckCircle2 className="w-2.5 h-2.5" /> {opp.stage}
+          {stageLabel && (
+            <span
+              className={clsx(
+                "flex items-center gap-1 px-1.5 py-0.5 rounded-[var(--radius-xs)] text-[10px] font-medium uppercase tracking-wider shrink-0",
+                isProgressing && "bg-[var(--color-accent)]/15 text-[var(--color-accent)]",
+                isResearching && "bg-[var(--color-warm)]/15 text-[var(--color-warm)]",
+                isLost && "bg-[var(--color-hot)]/15 text-[var(--color-hot)]",
+              )}
+            >
+              {rowStageIcon(opp.stage as Stage)} {stageLabel}
             </span>
           )}
           <span className="ml-auto tabular-nums">{formatAge(opp.posted_date)}</span>

@@ -81,9 +81,10 @@ async def _execute_scan(scan_id: str, params: dict) -> None:
     scans_store.mark_running(scan_id)
     locations = params["locations"]
     niches = params["niches"]
-    scans_store.append_log(
+    scans_store.set_phase(
         scan_id,
-        f"Scraping {len(niches)} niche(s) across {len(locations)} location(s)...",
+        f"Scraping {len(niches)} niche(s) across {len(locations)} location(s)…",
+        progress=10,
     )
 
     try:
@@ -94,6 +95,16 @@ async def _execute_scan(scan_id: str, params: dict) -> None:
         def on_progress(msg: str):
             scans_store.append_log(scan_id, msg)
             logger.info(f"[COLD-SCAN {scan_id}] {msg}")
+            # Promote pipeline events into structured phase updates.
+            low = msg.lower()
+            if low.startswith("scraping "):
+                # "Scraping plumbing in Austin, TX..."
+                scans_store.set_phase(scan_id, msg.rstrip(".…"), progress=20)
+            elif "email extraction:" in low:
+                # "Email extraction: 26/76 extracted, 8 safe-to-send"
+                scans_store.set_phase(scan_id, msg, progress=85)
+            elif "persisted" in low and "to supabase" in low:
+                scans_store.set_phase(scan_id, "Persisting to database", progress=95)
 
         ids = await pipeline.run(
             locations=locations,
@@ -122,6 +133,11 @@ async def _execute_scan(scan_id: str, params: dict) -> None:
 
         scans_store.mark_completed(
             scan_id, leads_found=len(ids), emails_extracted=emails_count
+        )
+        scans_store.set_phase(
+            scan_id,
+            f"Done — {len(ids)} prospects, {emails_count} with email",
+            progress=100,
         )
         scans_store.append_log(
             scan_id,

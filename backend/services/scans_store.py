@@ -14,7 +14,8 @@ from backend.services.supabase_client import get_client
 _FIELDS = (
     "id, type, status, sources, keywords, locations, niches, source_configs, "
     "max_results, progress, leads_found, emails_extracted, logs, error, "
-    "output_files, created_at, started_at, finished_at"
+    "output_files, created_at, started_at, finished_at, "
+    "phase, current_source, current_keyword"
 )
 
 
@@ -78,6 +79,26 @@ def update(scan_id: str, patch: dict[str, Any]) -> None:
 
 def append_log(scan_id: str, message: str) -> None:
     update(scan_id, {"logs": [message]})
+
+
+def set_phase(
+    scan_id: str,
+    phase: str,
+    *,
+    progress: int | None = None,
+    source: str | None = None,
+    keyword: str | None = None,
+) -> None:
+    """Update the human-readable phase string + an optional progress %.
+    Frontend polls /api/direct/scans/{id} every 2s and reads these fields."""
+    payload: dict = {"phase": phase}
+    if progress is not None:
+        payload["progress"] = max(0, min(100, int(progress)))
+    if source is not None:
+        payload["current_source"] = source
+    if keyword is not None:
+        payload["current_keyword"] = keyword
+    update(scan_id, payload)
 
 
 def mark_running(scan_id: str) -> None:

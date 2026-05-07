@@ -77,19 +77,39 @@ async def _execute_scan(scan_id: str, params: dict) -> None:
     max_results = int(params.get("max_results") or 50)
 
     scans_store.mark_running(scan_id)
-    scans_store.append_log(
+    scans_store.set_phase(
         scan_id,
-        f"Scraping {len(sources)} sources for {len(keywords)} keywords...",
+        f"Scraping {len(sources)} sources for {len(keywords)} keyword(s)…",
+        progress=10,
     )
 
     try:
         from src.direct_leads.pipeline import DirectLeadsPipeline
 
         pipeline = DirectLeadsPipeline()
+        # Each source completing is worth `step` percent. We start at 10
+        # (post-init) and cap at 90 so the final 10 is reserved for
+        # dedup/score/persist.
+        completed_count = 0
+        step = max(1, int(80 / max(1, len(sources))))
 
         def on_progress(msg: str):
+            # Pipeline emits "Scanning {source}..." per source — promote that
+            # into a structured phase update, otherwise just append a log.
+            nonlocal completed_count
             scans_store.append_log(scan_id, msg)
             logger.info(f"[SCAN {scan_id}] {msg}")
+            if msg.lower().startswith("scanning "):
+                source = msg.replace("Scanning ", "").rstrip(".").rstrip("…").strip()
+                scans_store.set_phase(
+                    scan_id,
+                    f"Scraping {source}",
+                    progress=10 + completed_count * step,
+                    source=source,
+                )
+                completed_count += 1
+            elif msg.lower().startswith("enriching"):
+                scans_store.set_phase(scan_id, "Enriching company info", progress=92)
 
         ids = await pipeline.run(
             keywords=keywords,
@@ -100,7 +120,9 @@ async def _execute_scan(scan_id: str, params: dict) -> None:
             scan_id=scan_id,
         )
 
+        scans_store.set_phase(scan_id, "Persisting leads to database", progress=98)
         scans_store.mark_completed(scan_id, leads_found=len(ids))
+        scans_store.set_phase(scan_id, f"Done — {len(ids)} leads", progress=100)
         scans_store.append_log(scan_id, f"Done — {len(ids)} leads persisted.")
         logger.info(f"[SCAN {scan_id}] Completed: {len(ids)} leads")
 

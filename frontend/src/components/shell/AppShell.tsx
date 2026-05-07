@@ -2,6 +2,7 @@ import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { PulseBar } from "./PulseBar";
+import { ScanProgressDock } from "./ScanProgressDock";
 
 export function AppShell() {
   return (
@@ -14,6 +15,8 @@ export function AppShell() {
         </main>
         <PulseBar />
       </div>
+      {/* Floating progress card — only visible while scans are running. */}
+      <ScanProgressDock />
     </div>
   );
 }
